@@ -33,9 +33,17 @@ public enum History {
     public static let minRecordGap: TimeInterval = 6 * 60 * 60   // keeps `maxRecords` slots spanning days, not hours
 
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        #if DUSTBAR_DEMO
+        if let demoURL { return demoURL }
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/com.megasoft78.dustbar/history.json")
     }
+
+    #if DUSTBAR_DEMO
+    /// Demo builds read and write history here instead of the real cache folder.
+    nonisolated(unsafe) static var demoURL: URL?
+    #endif
 
     /// Appends a snapshot of `tree` and keeps the newest `maxRecords`. Returns false when nothing was written,
     /// including when the newest record for the same root is less than `minGap` old.

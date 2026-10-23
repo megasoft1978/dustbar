@@ -121,21 +121,25 @@ public struct CleanView: View {
         let plan = CleanSelection.plan(model.categories, selected: model.selectedItems)
         VStack(spacing: 0) {
             if let result = model.lastResult { resultBanner(result) }
-            if model.snapshotCount > 0 { snapshotCard }
-            if model.discovering {
-                ProgressView("Analyzing…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if hasItems {
+            if model.discovering || !hasItems {
+                // No category list to sit under: the snapshots card stays on top with the status view.
+                if model.snapshotCount > 0 { snapshotCard.padding([.horizontal, .top], 12) }
+                if model.discovering {
+                    ProgressView("Analyzing…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.scanning {
+                    ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    emptyState
+                }
+            } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(model.categories) { categoryCard($0) }
+                        if model.snapshotCount > 0 { snapshotCard }
                     }
                     .padding(12)
                 }
                 .scrollIndicators(.never)
-            } else if model.scanning {
-                ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                emptyState
             }
             if hasItems { footer(plan) }
         }
@@ -248,8 +252,6 @@ public struct CleanView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
     }
 
     private func categoryCard(_ category: CleanCategory) -> some View {

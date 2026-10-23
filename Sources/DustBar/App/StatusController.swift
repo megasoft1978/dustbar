@@ -53,9 +53,9 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     private var lastSnapshotAt: ContinuousClock.Instant?
     private var preLiveTree: DiskTree?              // last complete tree, restored if a live scan is discarded
     private var knownItemPaths = Set<String>()      // every item path seen by any completed scan
-    private let home = FileManager.default.homeDirectoryForCurrentUser.path
-    private let settings = Settings()
-    private let lowDisk = LowDiskAlert()
+    private let home: String
+    private let settings: Settings
+    private let lowDisk: LowDiskAlert
     private lazy var reminder = CleanupReminder(settings: settings)
     private let snapshotOps: SnapshotOps
     private var scannedSignature: String?           // root + exclusions of the tree on screen (nil: unknown, e.g. cached)
@@ -66,7 +66,26 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     private var scanRoot: String { ShellLogic.scanRoot(scope: settings.scanScope, home: home) }
 
     init(snapshotOps: SnapshotOps = .live) {
+        #if DUSTBAR_DEMO
+        if let demo = DemoMode.options {
+            let suite = UserDefaults(suiteName: DemoMode.suiteName) ?? .standard
+            self.snapshotOps = DemoFixture.snapshotOps()
+            home = DemoFixture.root
+            settings = Settings(defaults: suite, home: DemoFixture.root)
+            lowDisk = LowDiskAlert(defaults: suite, notify: { _ in })
+            demoOptions = demo
+        } else {
+            self.snapshotOps = snapshotOps
+            home = FileManager.default.homeDirectoryForCurrentUser.path
+            settings = Settings()
+            lowDisk = LowDiskAlert()
+        }
+        #else
         self.snapshotOps = snapshotOps
+        home = FileManager.default.homeDirectoryForCurrentUser.path
+        settings = Settings()
+        lowDisk = LowDiskAlert()
+        #endif
         super.init()
         lowDisk.setThreshold(settings.lowDiskThreshold)   // Settings and LowDiskAlert share one UserDefaults key
         observeSettings()
@@ -86,6 +105,13 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         model.onEmptyTrash = { [weak self] items in self?.emptyTrash(items) }
         model.onRefreshSnapshots = { [weak self] in self?.refreshSnapshots() }
         model.onDeleteSnapshots = { [weak self] in self?.deleteSnapshots() }
+
+        #if DUSTBAR_DEMO
+        if let demo = demoOptions {
+            startDemo(demo)
+            return
+        }
+        #endif
 
         model.stats = Monitor.currentStats()
         refreshStatusItem()
@@ -128,6 +154,12 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     // The SwiftUI view is dropped on close: a hidden hosting view keeps its render buffers (hundreds of MB while scanning).
     func popoverDidClose(_ notification: Notification) {
         guard !popover.isShown else { return }   // reopened before this close notification ran
+        #if DUSTBAR_DEMO
+        if demoOptions != nil, model.scanning || model.isLiveSnapshot {
+            demoTask?.cancel()
+            DemoMode.populate(model, snapshotOps: snapshotOps)
+        }
+        #endif
         discardLiveSnapshot()   // restores the last complete tree and releases the partial snapshot
         popover.contentViewController = nil
         malloc_zone_pressure_relief(nil, 0)
@@ -204,7 +236,21 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
             return
         }
         NSApp.activate()
+        #if DUSTBAR_DEMO
+        if let demo = demoOptions {
+            let scheme: ColorScheme? = demo.dark.map { $0 ? .dark : .light }
+            let host = NSHostingController(rootView: AnyView(PopoverView(model: model, tab: demo.tab).preferredColorScheme(scheme)))
+            if let appearance = DemoMode.forcedAppearance {
+                popover.appearance = appearance
+                host.view.appearance = appearance
+            }
+            popover.contentViewController = host
+        } else {
+            popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
+        }
+        #else
         popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
+        #endif
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         scanIfStale()
     }
@@ -331,6 +377,9 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
 
     /// Without `force`, a no-op while a scan runs. With `force`, cancels the running scan and restarts.
     private func rescan(force: Bool = false) {
+        #if DUSTBAR_DEMO
+        if demoOptions != nil { demoRescan(force: force); return }
+        #endif
         if model.scanning && !force { return }
         scanTask?.cancel()
         scanGeneration += 1
@@ -549,5 +598,44 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
             self.rescan(force: true)
         }
     }
-}
 
+    #if DUSTBAR_DEMO
+    // MARK: Demo mode (compiled only with -DDUSTBAR_DEMO)
+
+    private var demoOptions: DemoMode.Options?
+    private var demoTask: Task<Void, Never>?
+    private var demoReplayed = false
+
+    private func startDemo(_ options: DemoMode.Options) {
+        DemoMode.install(on: model, real: .init(
+            trash: { Cleaner.trash($0) },
+            emptyTrash: { Cleaner.emptyTrash($0, home: DemoFixture.root) },
+            deleteSnapshot: { Snapshots.delete($0) }))
+        model.onRescan = { [weak self] in self?.demoRescan(force: true) }
+        DemoMode.populate(model, snapshotOps: snapshotOps)
+        if let tree = model.tree { DemoMode.installHistory(tree: tree) }
+        refreshStatusItem()
+        observeStats()
+        if let path = options.exportStatusItem, let button = statusItem.button {
+            let ok = DemoMode.exportStatusItem(image: button.image, title: button.attributedTitle, dark: options.dark ?? true, to: path)
+            if let dir = History.demoURL?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: dir) }
+            FileHandle.standardError.write(Data((ok ? "exported \(path)\n" : "export failed\n").utf8))
+            exit(ok ? 0 : 1)
+        }
+        DemoMode.prepare(options) { [weak self] in
+            guard let self, let button = self.statusItem.button, !self.popover.isShown else { return }
+            self.statusItemClicked(button)
+        }
+    }
+
+    /// Opening the popover replays the scan once when `--demo-scan` is set; the Rescan button always replays.
+    private func demoRescan(force: Bool) {
+        guard let options = demoOptions, force || (options.scan && !demoReplayed) else { return }
+        demoReplayed = true
+        demoTask?.cancel()
+        let model = self.model
+        let ops = snapshotOps
+        demoTask = Task { await DemoMode.replayScan(model, snapshotOps: ops) }
+    }
+    #endif
+}
