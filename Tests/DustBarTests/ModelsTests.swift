@@ -88,3 +88,9 @@ private func cat(_ id: String, _ paths: [String]) -> CleanCategory {
     #expect(!model.discovering)
     #expect(!model.scanning && !model.cleaning)
 }
+
+@MainActor @Test func snapshotFieldsDefaultEmpty() {
+    let model = AppModel()
+    #expect(model.snapshotCount == 0 && model.snapshotSummary == nil && model.snapshotMessage == nil)
+    #expect(model.onDeleteSnapshots == nil && model.onRefreshSnapshots == nil)
+}

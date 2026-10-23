@@ -293,6 +293,8 @@ final class PopoverSnapshotTests: XCTestCase {
                           items: [CleanItem(path: "/Users/demo/.Trash/old.zip", bytes: 3_000_000_000)]),
         ]
         model.selectedItems = Set(cacheItems.map(\.path))
+        model.snapshotCount = 3
+        model.snapshotSummary = "3 snapshots, oldest Oct 12"
         return model
     }
 
@@ -303,8 +305,9 @@ final class PopoverSnapshotTests: XCTestCase {
         // Hosted in an off-screen window so the popover renders through the real AppKit path.
         for dark in [false, true] {
             let name = dark ? "dark" : "light"
-            for (tabName, showClean) in [("explore", false), ("clean", true)] {
-                let view = PopoverView(model: model, showClean: showClean)
+            for tab in PopoverView.Tab.allCases {
+                let tabName = tab.title.lowercased()
+                let view = PopoverView(model: model, tab: tab)
                     .background(dark ? Color(white: 0.11) : Color(white: 0.90))
                 let host = NSHostingView(rootView: view)
                 host.frame = NSRect(x: 0, y: 0, width: 420, height: 560)

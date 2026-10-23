@@ -30,14 +30,25 @@ public struct PopoverView: View {
 
     static let height: CGFloat = 680
 
-    private enum Tab: Hashable { case explore, clean }
+    enum Tab: Hashable, CaseIterable {
+        case explore, types, growth, clean
+
+        var title: String {
+            switch self {
+            case .explore: "Explore"
+            case .types: "Types"
+            case .growth: "Growth"
+            case .clean: "Clean"
+            }
+        }
+    }
 
     public init(model: AppModel) { self.model = model }
 
-    /// Test hook: starts on the Clean tab when `showClean` is true.
-    init(model: AppModel, showClean: Bool) {
+    /// Test hook: starts on the given tab.
+    init(model: AppModel, tab: Tab) {
         self.model = model
-        self._tab = State(initialValue: showClean ? .clean : .explore)
+        self._tab = State(initialValue: tab)
     }
 
     public var body: some View {
@@ -45,14 +56,19 @@ public struct PopoverView: View {
             header
             if model.progress.unreadableDirs > 0 { fullDiskAccessBanner }
             Picker("Section", selection: $tab) {
-                Text("Explore").tag(Tab.explore)
-                Text("Clean").tag(Tab.clean)
+                ForEach(Tab.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             switch tab {
             case .explore:
                 explore
+            case .types:
+                TypesView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .growth:
+                GrowthView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .clean:
                 CleanView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

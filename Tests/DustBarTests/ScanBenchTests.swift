@@ -49,3 +49,39 @@ func scanBench() async {
     if ProcessInfo.processInfo.environment["DUSTBAR_BENCH_HOLD"] != nil { try? await Task.sleep(for: .seconds(25)) }
     print("BENCH elapsed=\(elapsed) snapshots=\(s.count) rootSizes=\(s.prefix(12).map { $0 >> 20 })MB... final=\((s.last ?? 0) >> 20) files=\(prog.withLock { $0.files }) nodes=\(nodes) baseRSS=\(base)MB peakRSS=\(peak >> 20)MB endRSS=\(residentBytes() >> 20)MB")
 }
+
+/// Env-gated: DUSTBAR_REFRESH_BENCH=1 (or a path; default ~/Library) swift test --filter refreshBench
+/// Full scan vs refresh of 20 random existing directories; prints times and the largest size mismatch.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["DUSTBAR_REFRESH_BENCH"] != nil))
+func refreshBench() async throws {
+    let env = ProcessInfo.processInfo.environment["DUSTBAR_REFRESH_BENCH"]!
+    let root = env.hasPrefix("/") ? env : NSHomeDirectory() + "/Library"
+    let t0 = ContinuousClock.now
+    let tree = try #require(await Scanner.scanCancellable(root: root, progress: { _ in }))
+    let full = ContinuousClock.now - t0
+
+    // Random kept directories, each below 1% of the total so the refresh stays incremental.
+    var pool = (1..<tree.count).filter { tree.isDir[$0] && tree.size[$0] > 0 && tree.size[$0] < tree.size[0] / 100 }
+    var dirty = Set<String>()
+    while dirty.count < 20, !pool.isEmpty {
+        dirty.insert(tree.path(of: NodeID(pool.remove(at: Int.random(in: 0..<pool.count)))))
+    }
+    let t1 = ContinuousClock.now
+    let refreshed = await Scanner.refresh(tree: tree, dirtyPaths: dirty)
+    let incr = ContinuousClock.now - t1
+
+    var maxDiff: UInt64 = 0
+    var compared = 0
+    if let refreshed {
+        func index(_ t: DiskTree) -> [String: UInt64] {
+            var m: [String: UInt64] = [:]
+            for i in 0..<t.count where t.isDir[i] { m[t.path(of: NodeID(i))] = t.size[i] }
+            return m
+        }
+        let a = index(tree), b = index(refreshed)
+        for (p, s) in a { if let r = b[p] { compared += 1; maxDiff = max(maxDiff, s > r ? s - r : r - s) } }
+    }
+    print("REFRESH root=\(root) full=\(full) refresh=\(incr) dirty=\(dirty.count) result=\(refreshed == nil ? "nil" : "tree") dirsCompared=\(compared) maxSizeMismatch=\(maxDiff)B")
+    #expect(refreshed != nil)
+    #expect(maxDiff == 0)
+}

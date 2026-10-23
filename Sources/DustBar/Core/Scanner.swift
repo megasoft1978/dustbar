@@ -37,13 +37,13 @@ public enum Scanner {
     /// (default `defaultPruneThreshold`) and files below max(1 MB, `pruneBelow`) are folded into a "(small files)"
     /// child of the nearest kept directory.
     /// A cancelled walk returns a partial tree; use `scanCancellable` when partial results must not be published.
-    public static func scan(root: String, pruneBelow: UInt64? = nil, progress: @escaping @Sendable (ScanProgress) -> Void) async -> DiskTree {
-        await walk(root: root, pruneBelow: pruneBelow, progress: progress).tree
+    public static func scan(root: String, pruneBelow: UInt64? = nil, excluded: Set<String> = [], progress: @escaping @Sendable (ScanProgress) -> Void) async -> DiskTree {
+        await walk(root: root, pruneBelow: pruneBelow, excluded: excluded, progress: progress).tree
     }
 
     /// Like `scan`, but returns nil if the calling task was cancelled before the walk finished.
-    public static func scanCancellable(root: String, pruneBelow: UInt64? = nil, progress: @escaping @Sendable (ScanProgress) -> Void) async -> DiskTree? {
-        let result = await walk(root: root, pruneBelow: pruneBelow, progress: progress)
+    public static func scanCancellable(root: String, pruneBelow: UInt64? = nil, excluded: Set<String> = [], progress: @escaping @Sendable (ScanProgress) -> Void) async -> DiskTree? {
+        let result = await walk(root: root, pruneBelow: pruneBelow, excluded: excluded, progress: progress)
         return result.cancelled ? nil : result.tree
     }
 
@@ -55,12 +55,160 @@ public enum Scanner {
         root: String,
         snapshotInterval: Double = 1.5,
         pruneBelow: UInt64? = nil,
+        excluded: Set<String> = [],
         onSnapshot: @escaping @Sendable (DiskTree) -> Void,
         progress: @escaping @Sendable (ScanProgress) -> Void
     ) async -> DiskTree? {
         let sink = SnapshotSink(every: .seconds(snapshotInterval), emit: onSnapshot)
-        let result = await walk(root: root, pruneBelow: pruneBelow, progress: progress, snapshot: sink)
+        let result = await walk(root: root, pruneBelow: pruneBelow, excluded: excluded, progress: progress, snapshot: sink)
         return result.cancelled ? nil : result.tree
+    }
+
+    // MARK: Incremental refresh
+
+    /// Refresh gives up (returns nil) beyond this many directories to rescan...
+    public static let refreshMaxDirs = 200
+    /// ...or when they cover more than 1/`refreshMaxShareDivisor` (25%) of the tree's bytes.
+    public static let refreshMaxShareDivisor: UInt64 = 4
+
+    /// Rebuilds only the directories named by `dirtyPaths` and returns a NEW tree (`tree` is never mutated), or nil
+    /// when the caller must do a full rescan: root missing, task cancelled, root itself dirty, too many dirs
+    /// (> `refreshMaxDirs`), the dirs cover > 25% of the bytes, or a dirty dir became a non-directory.
+    ///
+    /// A path that resolves to no known top-level directory is ignored unless its first component is a directory on
+/// disk (then the root is the target and nil is returned).
+///
+/// Each dirty path maps to the deepest existing directory node on its name walk (a file path maps to its
+    /// parent dir; a path inside a "(small files)"-folded or otherwise unkept area maps to the nearest kept
+    /// ancestor). Nested targets collapse to the top ancestor. Each target subtree is rescanned with the same
+    /// pruning rules (`pruneBelow` should equal the original scan's value; nil = current default) and grafted in;
+    /// ancestor sizes move by the delta. A target that no longer exists is removed. Paths outside the root and
+    /// inside `excluded` are ignored. With nothing to do, `tree` itself is returned (trees are immutable once published).
+    ///
+    /// Inaccuracy: hard-link dedupe is global within one walk, but a refreshed subtree is walked alone. Links whose
+    /// other name lies outside that subtree are counted in full inside it (possible overcount), and a file deleted
+    /// inside it whose twin outside was previously deduped is not re-attributed (possible undercount). Either
+    /// error is bounded by the bytes of multi-link files located inside the refreshed subtrees. Also, a refreshed
+    /// directory that shrinks below the prune threshold keeps its node (a full scan would fold it into "(small files)").
+    public static func refresh(
+        tree: DiskTree,
+        dirtyPaths: Set<String>,
+        pruneBelow: UInt64? = nil,
+        excluded: Set<String> = []
+    ) async -> DiskTree? {
+        let root = trimmed(tree.rootPath)
+        var rootStat = stat()
+        guard stat(root, &rootStat) == 0, tree.count > 0 else { return nil }
+        let ex = excluded.map { trimmed($0) }.filter { !$0.isEmpty }
+        let rootPrefix = root == "/" ? "/" : root + "/"
+
+        var targets = Set<NodeID>()
+        for raw in dirtyPaths {
+            let p = trimmed(raw)
+            if isExcluded(p, by: ex) { continue }
+            var node: NodeID = 0
+            if p != root {
+                guard p.hasPrefix(rootPrefix) else { continue }
+                let comps = p.dropFirst(rootPrefix.count).split(separator: "/")
+                for comp in comps {
+                    guard let c = tree.children(of: node).first(where: { tree.isDir[Int($0)] && tree.name($0) == comp }) else { break }
+                    node = c
+                }
+                if node == 0, let first = comps.first {
+                    // Not below any known top-level directory. Files directly in the root (and vanished entries) barely
+                    // move the total and are caught by the next full scan; only a real directory forces a rescan.
+                    var st = stat()
+                    if lstat(rootPrefix + first, &st) != 0 || st.st_mode & S_IFMT != S_IFDIR { continue }
+                }
+            }
+            targets.insert(node)
+        }
+        if targets.isEmpty { return tree }
+
+        let tops = targets.filter { t in
+            var p = tree.parent[Int(t)]
+            while p != noNode {
+                if targets.contains(p) { return false }
+                p = tree.parent[Int(p)]
+            }
+            return true
+        }.sorted()
+        if tops.contains(0) || tops.count > refreshMaxDirs { return nil }
+        let covered = tops.reduce(UInt64(0)) { $0 &+ tree.size[Int($1)] }
+        if covered > tree.size[0] / refreshMaxShareDivisor { return nil }
+
+        let minDir = pruneBelow ?? defaultPruneThreshold(root: root)
+        var replaced: [NodeID: DiskTree] = [:]
+        var removed = Set<NodeID>()
+        var adjust: [NodeID: Int64] = [:]
+        for t in tops {
+            if Task.isCancelled { return nil }
+            let path = tree.path(of: t)
+            var st = stat()
+            var newSize: UInt64 = 0
+            if lstat(path, &st) != 0 {
+                guard errno == ENOENT || errno == ENOTDIR else { return nil }
+                removed.insert(t)
+            } else if st.st_mode & S_IFMT != S_IFDIR {
+                return nil
+            } else if st.st_dev != rootStat.st_dev {
+                removed.insert(t)
+            } else {
+                let r = await walk(root: path, pruneBelow: minDir, excluded: excluded, progress: { _ in })
+                if r.cancelled { return nil }
+                replaced[t] = r.tree
+                newSize = r.tree.size[0]
+            }
+            let delta = Int64(bitPattern: newSize &- tree.size[Int(t)])
+            var p = tree.parent[Int(t)]
+            while p != noNode {
+                adjust[p, default: 0] &+= delta
+                p = tree.parent[Int(p)]
+            }
+        }
+
+        func newSize(_ id: NodeID) -> UInt64 {
+            if let sub = replaced[id] { return sub.size[0] }
+            return tree.size[Int(id)] &+ UInt64(bitPattern: adjust[id] ?? 0)
+        }
+        let out = DiskTree(rootPath: tree.rootPath)
+        out.addSize(0, newSize(0))
+        var stack: [(old: NodeID, new: NodeID)] = [(0, 0)]
+        while let (o, n) = stack.popLast() {
+            for c in tree.children(of: o).reversed() where !removed.contains(c) {   // add() prepends, so reverse keeps order
+                let id = out.add(name: tree.name(c), parent: n, isDir: tree.isDir[Int(c)], size: newSize(c))
+                if let sub = replaced[c] {
+                    graft(sub, into: out, under: id)
+                } else if tree.firstChild[Int(c)] != noNode {
+                    stack.append((c, id))
+                }
+            }
+        }
+        out.compact()
+        return out
+    }
+
+    /// Copies everything below `src`'s root under `parent` in `dst`, keeping sibling order.
+    private static func graft(_ src: DiskTree, into dst: DiskTree, under parent: NodeID) {
+        var stack: [(old: NodeID, new: NodeID)] = [(0, parent)]
+        while let (o, n) = stack.popLast() {
+            for c in src.children(of: o).reversed() {
+                let id = dst.add(name: src.name(c), parent: n, isDir: src.isDir[Int(c)], size: src.size[Int(c)])
+                if src.firstChild[Int(c)] != noNode { stack.append((c, id)) }
+            }
+        }
+    }
+
+    static func trimmed(_ path: String) -> String {
+        var s = path
+        while s.utf8.count > 1, s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
+    /// True when `path` equals or lies below one of `prefixes` (already `trimmed`).
+    static func isExcluded(_ path: String, by prefixes: [String]) -> Bool {
+        for e in prefixes where path == e || path.hasPrefix(e == "/" ? e : e + "/") { return true }
+        return false
     }
 
     fileprivate static let liveDepth: UInt32 = 3   // directories deeper than this only feed their depth-3 ancestor
@@ -68,6 +216,7 @@ public enum Scanner {
     private static func walk(
         root: String,
         pruneBelow: UInt64?,
+        excluded: Set<String> = [],
         progress: @escaping @Sendable (ScanProgress) -> Void,
         snapshot: SnapshotSink? = nil
     ) async -> (tree: DiskTree, cancelled: Bool) {
@@ -80,7 +229,7 @@ public enum Scanner {
         let minDir = pruneBelow ?? defaultPruneThreshold(root: root)
         let run = WalkRun(
             root: root, rootDev: rootStat.st_dev, tree: tree, minDir: minDir,
-            progress: progress, snapshot: snapshot)
+            excluded: excluded, progress: progress, snapshot: snapshot)
         // The walk runs on its own threads (never the cooperative pool: open() can block forever on cloud /
         // File Provider folders); this task just waits for it and forwards cancellation.
         await withTaskCancellationHandler {
@@ -508,6 +657,7 @@ private final class WalkRun: @unchecked Sendable {
     private let useBulk: Bool
     private let progress: @Sendable (ScanProgress) -> Void
     private let snapshot: SnapshotSink?
+    private let excluded: [String]   // absolute paths without trailing slash; those directories are not entered
 
     private let lock = NSLock()
     private let workSem = DispatchSemaphore(value: 0)     // one count per queued directory (or per shutdown wake)
@@ -522,7 +672,8 @@ private final class WalkRun: @unchecked Sendable {
     private var workerCount = 0
 
     init(root: String, rootDev: dev_t, tree: DiskTree, minDir: UInt64,
-         progress: @escaping @Sendable (ScanProgress) -> Void, snapshot: SnapshotSink?) {
+         excluded: Set<String>, progress: @escaping @Sendable (ScanProgress) -> Void, snapshot: SnapshotSink?) {
+        self.excluded = excluded.map { Scanner.trimmed($0) }.filter { !$0.isEmpty }
         self.root = root; self.rootDev = rootDev; self.tree = tree; self.minDir = minDir
         self.fileMin = max(Scanner.smallThreshold, minDir)   // a file >= minDir forces its parent chain to be kept
         self.progress = progress; self.snapshot = snapshot
@@ -646,6 +797,7 @@ private final class WalkRun: @unchecked Sendable {
                     for i in 0..<buf.count where buf[i] == 0 {
                         let name = String(decoding: UnsafeBufferPointer(rebasing: buf[start..<i]), as: UTF8.self)
                         start = i + 1
+                        if !excluded.isEmpty, Scanner.isExcluded(prefix + name, by: excluded) { continue }
                         var childLive = dir.live
                         if showChildren, let live { childLive = live.add(name: name, parent: dir.live, isDir: true) }
                         newDirs.append(Pending(path: prefix + name, parent: slot, depth: childDepth, live: childLive))

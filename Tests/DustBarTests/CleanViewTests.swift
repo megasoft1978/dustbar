@@ -132,3 +132,12 @@ private func category(_ id: String, _ items: [(String, UInt64)]) -> CleanCategor
     #expect(CleanSelection.droppingCleaned(selected, result: result) == ["/busy", "/other"])
     #expect(CleanSelection.droppingCleaned([], result: result).isEmpty)
 }
+
+@Test func popoverTabsOrder() {
+    #expect(PopoverView.Tab.allCases.map(\.title) == ["Explore", "Types", "Growth", "Clean"])
+}
+
+@Test func snapshotTitleCountsAndPluralizes() {
+    #expect(CleanSelection.snapshotTitle(count: 1) == "Permanently delete 1 local snapshot?")
+    #expect(CleanSelection.snapshotTitle(count: 3) == "Permanently delete 3 local snapshots?")
+}

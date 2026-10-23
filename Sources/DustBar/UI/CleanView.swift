@@ -84,6 +84,13 @@ public enum CleanSelection {
         return "~/" + String(path.dropFirst(prefix.count))
     }
 
+    /// Title of the snapshot-delete confirmation.
+    public static func snapshotTitle(count: Int) -> String {
+        count == 1
+            ? "Permanently delete 1 local snapshot?"
+            : "Permanently delete \(count) local snapshots?"
+    }
+
     public static func format(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
     }
@@ -101,6 +108,7 @@ public struct CleanView: View {
     @State private var expanded: Set<String> = []
     @State private var confirming = false
     @State private var confirmingEmpty = false
+    @State private var confirmingSnapshots = false
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     public init(model: AppModel) { self.model = model }
@@ -113,6 +121,7 @@ public struct CleanView: View {
         let plan = CleanSelection.plan(model.categories, selected: model.selectedItems)
         VStack(spacing: 0) {
             if let result = model.lastResult { resultBanner(result) }
+            if model.snapshotCount > 0 { snapshotCard }
             if model.discovering {
                 ProgressView("Analyzing…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if hasItems {
@@ -122,6 +131,7 @@ public struct CleanView: View {
                     }
                     .padding(12)
                 }
+                .scrollIndicators(.never)
             } else if model.scanning {
                 ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -140,6 +150,18 @@ public struct CleanView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Items go to the Trash and can be restored.")
+        }
+        .confirmationDialog(
+            CleanSelection.snapshotTitle(count: model.snapshotCount),
+            isPresented: $confirmingSnapshots,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Snapshots", role: .destructive) {
+                model.onDeleteSnapshots?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone. Time Machine backups on your backup disk are not affected.")
         }
         .confirmationDialog(
             "Permanently delete \(plan.trash.count) items (\(CleanSelection.format(plan.trashBytes)))? This cannot be undone.",
@@ -180,6 +202,54 @@ public struct CleanView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding([.horizontal, .top], 12)
+    }
+
+    /// Time Machine local snapshots: a separate permanent action, never part of the Trash plan.
+    private var snapshotCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Time Machine local snapshots")
+                        .font(.body.weight(.semibold))
+                    if let summary = model.snapshotSummary {
+                        Text(summary)
+                            .font(.callout)
+                            .monospacedDigit()
+                    }
+                    Text("Local snapshots use space until macOS removes them. Deleting is permanent.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack {
+                Spacer(minLength: 0)
+                Button {
+                    confirmingSnapshots = true
+                } label: {
+                    Label("Delete snapshots…", systemImage: "trash.slash")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.regular)
+                .disabled(busy)
+            }
+            if let message = model.snapshotMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
     }
 
     private func categoryCard(_ category: CleanCategory) -> some View {

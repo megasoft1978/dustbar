@@ -35,6 +35,7 @@ private func ringImage(used: Double, tint: StatusTint) -> NSImage {
 final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     private static let staleAfter = Duration.seconds(300)
     private static let maxDirtyPaths = 50_000
+    private static let fullRescanAfter = Duration.seconds(24 * 3600)
     private static let snapshotGap = Duration.milliseconds(900)   // min main-actor gap between live snapshots (~1 s)
 
     private let model = AppModel()
@@ -46,17 +47,29 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = 0                  // bumped on every start/cancel; stale scans publish nothing
     private var lastScanFinished: ContinuousClock.Instant?
+    private var activeSignature: String?            // root + exclusions of the newest scan started (may still be running)
+    private var lastFullScan: ContinuousClock.Instant?   // last complete walk of the whole root (not an incremental refresh)
+    private var confirmedSnapshots: [LocalSnapshot] = []  // the list behind the count/summary the user sees; delete acts on this only
     private var lastSnapshotAt: ContinuousClock.Instant?
     private var preLiveTree: DiskTree?              // last complete tree, restored if a live scan is discarded
     private var knownItemPaths = Set<String>()      // every item path seen by any completed scan
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let settings = Settings()
     private let lowDisk = LowDiskAlert()
+    private lazy var reminder = CleanupReminder(settings: settings)
+    private let snapshotOps: SnapshotOps
+    private var scannedSignature: String?           // root + exclusions of the tree on screen (nil: unknown, e.g. cached)
+    private var lastPrune: UInt64?                  // pruneBelow used by the last complete scan; refresh must match it
     private let menu = NSMenu()
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-    private let alertSubmenu = NSMenu()
 
-    override init() {
+    private var scanRoot: String { ShellLogic.scanRoot(scope: settings.scanScope, home: home) }
+
+    init(snapshotOps: SnapshotOps = .live) {
+        self.snapshotOps = snapshotOps
         super.init()
+        lowDisk.setThreshold(settings.lowDiskThreshold)   // Settings and LowDiskAlert share one UserDefaults key
+        observeSettings()
         buildMenu()
         guard let button = statusItem.button else { return }
         button.target = self
@@ -71,6 +84,8 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         model.onRescan = { [weak self] in self?.rescan(force: true) }
         model.onClean = { [weak self] items in self?.clean(items) }
         model.onEmptyTrash = { [weak self] items in self?.emptyTrash(items) }
+        model.onRefreshSnapshots = { [weak self] in self?.refreshSnapshots() }
+        model.onDeleteSnapshots = { [weak self] in self?.deleteSnapshots() }
 
         model.stats = Monitor.currentStats()
         refreshStatusItem()
@@ -94,7 +109,7 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
 
     /// Shows the last saved tree right away (flagged via `model.cachedAt`) while the first fresh scan has not published yet.
     private func loadCachedTree() {
-        let root = home
+        let root = scanRoot
         Task { [weak self] in
             let cached = await Task.detached(priority: .utility) { TreeCache.load(root: root) }.value
             guard let self, let cached, self.model.tree == nil else { return }
@@ -125,6 +140,28 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
             Task { @MainActor in
                 self?.refreshStatusItem()
                 self?.observeStats()
+            }
+        }
+    }
+
+    /// Threshold changes apply at once; scope and exclusion changes trigger a rescan right away.
+    private func observeSettings() {
+        withObservationTracking {
+            _ = settings.lowDiskThreshold
+            _ = settings.scanScope
+            _ = settings.excludedFolders
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.lowDisk.threshold != self.settings.lowDiskThreshold {
+                    self.lowDisk.setThreshold(self.settings.lowDiskThreshold)
+                    self.refreshStatusItem()
+                }
+                let sig = ShellLogic.signature(root: self.scanRoot, excluded: Set(self.settings.excludedFolders))
+                if let known = self.activeSignature ?? self.scannedSignature, known != sig {
+                    self.rescan(force: true)   // scope or exclusions changed: do not wait for the next popover open
+                }
+                self.observeSettings()
             }
         }
     }
@@ -180,15 +217,9 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         menu.addItem(loginItem)
         menu.addItem(.separator())
 
-        let alertItem = NSMenuItem(title: "Alert below", action: nil, keyEquivalent: "")
-        for (index, threshold) in AlertThreshold.allCases.enumerated() {
-            let item = NSMenuItem(title: threshold.title, action: #selector(setAlertThreshold(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = index
-            alertSubmenu.addItem(item)
-        }
-        alertItem.submenu = alertSubmenu
-        menu.addItem(alertItem)
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         let rescanItem = NSMenuItem(title: "Rescan now", action: #selector(rescanNow), keyEquivalent: "r")
         rescanItem.target = self
@@ -210,9 +241,6 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         let isBundle = Bundle.main.bundlePath.hasSuffix(".app")
         loginItem.isEnabled = isBundle
         loginItem.toolTip = isBundle ? nil : "Launch at Login needs DustBar.app (run scripts/bundle.sh)"
-        for item in alertSubmenu.items {
-            item.state = AlertThreshold.allCases[item.tag] == lowDisk.threshold ? .on : .off
-        }
     }
 
     private func showMenu() {
@@ -220,9 +248,8 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
-    @objc private func setAlertThreshold(_ sender: NSMenuItem) {
-        lowDisk.setThreshold(AlertThreshold.allCases[sender.tag])
-        refreshStatusItem()   // re-evaluates immediately against current free space
+    @objc private func showSettings() {
+        SettingsWindow.show(settings: settings, launchAtLogin: .mainApp)
     }
 
     @objc private func rescanNow() {
@@ -265,9 +292,29 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         alert.runModal()
     }
 
-    /// Popover opened: scan if there is no tree yet, or if dirty paths exist and the last scan is over 5 min old.
+    /// Popover opened: full scan if there is no tree, it came from the cache, or settings changed what is scanned.
+    /// Otherwise refresh incrementally when dirty paths are few; fall back to a full rescan when that is not possible
+    /// or the dirty set is too large and the last scan is over 5 min old.
     private func scanIfStale() {
-        guard model.tree != nil, model.cachedAt == nil else { rescan(); return }   // cached tree: always refresh
+        guard let tree = model.tree, model.cachedAt == nil else { rescan(); return }   // cached tree: always refresh
+        guard scannedSignature == ShellLogic.signature(root: scanRoot, excluded: Set(settings.excludedFolders)) else {
+            rescan()   // scope or exclusions changed
+            return
+        }
+        if lastFullScan.map({ ContinuousClock.now - $0 > Self.fullRescanAfter }) ?? true {
+            rescan()   // periodic full walk: incremental refreshes ignore small root-level file changes
+            return
+        }
+        // Incremental only for the home scope: the Monitor watches home alone, so whole-disk changes are invisible to it.
+        if settings.scanScope == .home, !needsFullRescan, !model.scanning, !dirtyPaths.isEmpty {
+            let dirty = ShellLogic.normalizeDirty(dirtyPaths, root: tree.rootPath)
+            if dirty.isEmpty {
+                dirtyPaths.removeAll()   // all outside the tree root
+            } else if dirty.count <= ShellLogic.maxRefreshPaths {
+                refreshIncrementally(tree: tree, dirty: dirty)
+                return
+            }
+        }
         let dirty = !dirtyPaths.isEmpty || needsFullRescan
         let stale = lastScanFinished.map { ContinuousClock.now - $0 > Self.staleAfter } ?? true
         if dirty && stale { rescan() }
@@ -295,48 +342,94 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         dirtyPaths.removeAll()
         needsFullRescan = false
         lastSnapshotAt = nil
-        let root = home
+        let root = scanRoot
+        let settingsExcluded = Set(settings.excludedFolders)
+        let excluded = ShellLogic.excludedForScan(root: root, excluded: settingsExcluded)
+        let prune = Scanner.defaultPruneThreshold(root: root)
+        let signature = ShellLogic.signature(root: root, excluded: settingsExcluded)
+        activeSignature = signature
+        let homeScope = settings.scanScope == .home
         let model = self.model
         scanTask = Task { [weak self] in
-            guard let tree = await Scanner.scanLive(root: root, snapshotInterval: 1.0, onSnapshot: { snapshot in
+            guard let tree = await Scanner.scanLive(root: root, snapshotInterval: 1.0, pruneBelow: prune, excluded: excluded, onSnapshot: { snapshot in
                 Task { @MainActor in self?.publishSnapshot(snapshot, generation: generation) }
             }, progress: { progress in
                 Task { @MainActor in
                     if self?.scanGeneration == generation { model.progress = progress }
                 }
             }) else { return }
-
-            // Final tree: publish it, then derive categories from it. Each await re-checks the generation.
             guard !Task.isCancelled, let self, generation == self.scanGeneration else { return }
-            self.preLiveTree = nil
-            model.tree = tree
-            model.cachedAt = nil
-            model.isLiveSnapshot = false
-            model.scanning = false
-            self.lastScanFinished = ContinuousClock.now
-            Task.detached(priority: .utility) {
-                if let dev = TreeCache.deviceID(of: root) { TreeCache.save(tree, device: dev) }
-            }
+            await self.finishScan(tree: tree, root: root, homeScope: homeScope, prune: prune, signature: signature, generation: generation, full: true)
+        }
+    }
 
-            let discovered = await Rules.discover(home: root)
+    /// Re-walks only the dirty directories of the complete tree on screen. Falls back to a full rescan when
+    /// `Scanner.refresh` declines (too many dirs, root dirty, cancelled, ...).
+    private func refreshIncrementally(tree: DiskTree, dirty: Set<String>) {
+        scanTask?.cancel()
+        scanGeneration += 1
+        let generation = scanGeneration
+        model.scanning = true
+        model.discovering = true
+        model.progress = ScanProgress()
+        dirtyPaths.removeAll()
+        lastSnapshotAt = nil
+        let root = home
+        let settingsExcluded = Set(settings.excludedFolders)
+        let excluded = ShellLogic.excludedForScan(root: root, excluded: settingsExcluded)
+        let prune = lastPrune ?? Scanner.defaultPruneThreshold(root: tree.rootPath)
+        let signature = scannedSignature ?? ShellLogic.signature(root: root, excluded: settingsExcluded)
+        activeSignature = signature
+        scanTask = Task { [weak self] in
+            let refreshed = await Scanner.refresh(tree: tree, dirtyPaths: dirty, pruneBelow: prune, excluded: excluded)
+            guard !Task.isCancelled, let self, generation == self.scanGeneration else { return }
+            guard let refreshed else { self.rescan(force: true); return }
+            await self.finishScan(tree: refreshed, root: root, homeScope: true, prune: prune, signature: signature, generation: generation)
+        }
+    }
+
+    /// Publishes a complete tree (full or refreshed), persists it, then derives categories and notifications.
+    /// Every await re-checks the generation.
+    private func finishScan(tree: DiskTree, root: String, homeScope: Bool, prune: UInt64, signature: String, generation: Int, full: Bool = false) async {
+        let excluded = Set(settings.excludedFolders)
+        preLiveTree = nil
+        model.tree = tree
+        model.cachedAt = nil
+        model.isLiveSnapshot = false
+        model.scanning = false
+        lastScanFinished = ContinuousClock.now
+        if full { lastFullScan = lastScanFinished }
+        scannedSignature = signature
+        lastPrune = prune
+        Task.detached(priority: .utility) {
+            if let dev = TreeCache.deviceID(of: root) { TreeCache.save(tree, device: dev) }
+            History.record(tree: tree)
+        }
+
+        // Whole-disk scans are explore-only: no discovery, large files or duplicates outside the home scope.
+        var categories: [CleanCategory] = []
+        if homeScope {
+            let discovered = await Rules.discover(home: root, excluded: excluded)
             let basePaths = Set(discovered.flatMap(\.items).map(\.path))
             let dupResult = await Duplicates.find(tree: tree, excluding: basePaths)   // defaultSelected == false
-            let large = Rules.largeFiles(from: tree, home: root)
-            guard !Task.isCancelled, generation == self.scanGeneration else { return }
-            let categories = Self.dedupe(base: discovered, duplicates: dupResult.category.map { [$0] } ?? [], kept: dupResult.kept, large: large)
-
-            // Keep the user's choices for paths that still exist; default-select only paths never seen before.
-            let newPaths = Set(categories.flatMap(\.items).map(\.path))
-            let defaults = Set(categories.filter(\.defaultSelected).flatMap(\.items).map(\.path))
-            model.selectedItems = model.selectedItems.intersection(newPaths)
-                .union(defaults.subtracting(self.knownItemPaths))
-            self.knownItemPaths = newPaths
-            model.categories = categories
-            model.discovering = false
-            model.progress.done = true
-            self.scanTask = nil
-            malloc_zone_pressure_relief(nil, 0)   // hand the walk's and hashing's freed pages back
+            let large = Rules.largeFiles(from: tree, home: root, excluded: excluded)
+            guard !Task.isCancelled, generation == scanGeneration else { return }
+            categories = Self.dedupe(base: discovered, duplicates: dupResult.category.map { [$0] } ?? [], kept: dupResult.kept, large: large)
         }
+
+        // Keep the user's choices for paths that still exist; default-select only paths never seen before.
+        let newPaths = Set(categories.flatMap(\.items).map(\.path))
+        let defaults = Set(categories.filter(\.defaultSelected).flatMap(\.items).map(\.path))
+        model.selectedItems = model.selectedItems.intersection(newPaths)
+            .union(defaults.subtracting(knownItemPaths))
+        knownItemPaths = newPaths
+        model.categories = categories
+        model.discovering = false
+        model.progress.done = true
+        scanTask = nil
+        if homeScope { reminder.notify(cleanableBytes: ShellLogic.cleanableBytes(categories)) }
+        refreshSnapshots()
+        malloc_zone_pressure_relief(nil, 0)   // hand the walk's and hashing's freed pages back
     }
 
     /// Publishes a partial tree from a running scan. Throttled on the main actor; ignored once the scan is stale.
@@ -396,6 +489,40 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         discardLiveSnapshot()
         model.scanning = false
         model.discovering = false
+    }
+
+    // MARK: Time Machine snapshots
+
+    private func applySnapshots(_ snaps: [LocalSnapshot]) {
+        let shown = SnapshotFlow.display(snaps)
+        confirmedSnapshots = snaps
+        model.snapshotCount = shown.count
+        model.snapshotSummary = shown.summary
+    }
+
+    private func refreshSnapshots() {
+        let ops = snapshotOps
+        Task { [weak self] in
+            let snaps = await Task.detached(priority: .utility) { ops.list() }.value
+            self?.applySnapshots(snaps)
+        }
+    }
+
+    /// PERMANENT: deletes every listed snapshot. The UI confirms first. Ignored while scanning or cleaning.
+    private func deleteSnapshots() {
+        guard !model.scanning, !model.cleaning else { return }
+        model.cleaning = true
+        model.snapshotMessage = nil
+        let ops = snapshotOps
+        let confirmed = confirmedSnapshots
+        Task { [weak self] in
+            let outcome = await SnapshotFlow.deleteAll(ops: ops, confirmed: confirmed)
+            guard let self else { return }
+            self.model.cleaning = false
+            self.applySnapshots(outcome.remaining)
+            self.model.stats = Monitor.currentStats()
+            self.model.snapshotMessage = outcome.message
+        }
     }
 
     private func clean(_ items: [CleanItem]) {

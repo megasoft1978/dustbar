@@ -321,4 +321,136 @@ final class Scratch {
         #expect(Rules.categories(home: s.root).isEmpty)
         #expect(await Rules.discover(home: s.root).isEmpty)
     }
+
+    @Test func logsCategoryTakesOldChildrenOfLogsAndDiagnosticReports() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let h = s.root
+        let now = Date()
+        let old = now.addingTimeInterval(-120 * 86_400)
+
+        try s.file("Library/Logs/old.log", modified: old)
+        try s.file("Library/Logs/fresh.log", modified: now)
+        try s.file("Library/Logs/DiagnosticReports/old.crash", modified: old)
+        try s.file("Library/Logs/DiagnosticReports/fresh.crash", modified: now)
+        try s.file("Library/Logs/OldApp/run.log", modified: old)
+        _ = try s.dir("Library/Logs/OldApp", modified: old)            // backdate after its child exists
+        _ = try s.link("Library/Logs/link.log", to: h + "/Library/Logs/old.log")
+
+        let cat = Rules.categories(home: h).first { $0.id == "logs" }
+        #expect(cat?.defaultSelected == false)
+        #expect(cat?.items.count == 3)
+        #expect(Set(cat?.items.map(\.path) ?? []) == [
+            h + "/Library/Logs/old.log", h + "/Library/Logs/DiagnosticReports/old.crash", h + "/Library/Logs/OldApp",
+        ])
+        #expect(cat?.items.allSatisfy { !Rules.isDenied($0.path, home: h) } == true)
+    }
+
+    @Test func simulatorCategoryKeepsDeviceSupportOnlyPast90Days() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let h = s.root
+        let now = Date()
+        let old = now.addingTimeInterval(-120 * 86_400)
+        let month = now.addingTimeInterval(-30 * 86_400)
+
+        try s.file("Library/Developer/CoreSimulator/Caches/dyld/cache.bin")
+        try s.file("Library/Developer/CoreSimulator/Caches/fresh.bin", modified: now)
+        try s.file("Library/Developer/Xcode/iOS DeviceSupport/17.0 (21A329)/Symbols/a.sym", modified: old)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/17.0 (21A329)/Symbols", modified: old)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/17.0 (21A329)", modified: old)
+        try s.file("Library/Developer/Xcode/iOS DeviceSupport/18.0 (22A1)/Symbols/b.sym", modified: now)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/18.0 (22A1)", modified: now)
+        try s.file("Library/Developer/Xcode/iOS DeviceSupport/15.0 (19A1)/x.sym", modified: month)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/15.0 (19A1)", modified: month)
+        try s.file("Library/Developer/Xcode/DerivedData/App-abc/Build.bin")
+
+        let cats = Rules.categories(home: h)
+        let sim = cats.first { $0.id == "simulators" }
+        #expect(sim?.defaultSelected == false)
+        #expect(Set(sim?.items.map(\.path) ?? []) == [
+            h + "/Library/Developer/CoreSimulator/Caches/dyld",
+            h + "/Library/Developer/CoreSimulator/Caches/fresh.bin",
+            h + "/Library/Developer/Xcode/iOS DeviceSupport/17.0 (21A329)",
+        ])
+
+        // DeviceSupport moved out of Xcode data: no path may be counted in two categories.
+        let xcode = cats.first { $0.id == "xcode" }
+        #expect(xcode?.items.map(\.path) == [h + "/Library/Developer/Xcode/DerivedData/App-abc"])
+        let all = cats.flatMap { $0.items.map(\.path) }
+        #expect(Set(all).count == all.count)
+        #expect(cats.allSatisfy { $0.id != "brewold" }, "Homebrew downloads are already inside devcaches")
+    }
+
+    @Test func homebrewDownloadsCountedOnceInDevCaches() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        try s.file("Library/Caches/Homebrew/downloads/bottle.tar.gz")
+        try s.file("Library/Caches/com.app/blob.bin")
+
+        let cats = Rules.categories(home: s.root)
+        let all = cats.flatMap { $0.items.map(\.path) }
+        #expect(Set(all).count == all.count)
+        #expect(cats.first { $0.id == "devcaches" }?.items.map(\.path) == [s.root + "/Library/Caches/Homebrew"])
+        #expect(cats.first { $0.id == "caches" }?.items.map(\.path) == [s.root + "/Library/Caches/com.app"])
+    }
+
+    @Test func oldDirectoryWithFreshChildIsNotOffered() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let h = s.root
+        let now = Date()
+        let old = now.addingTimeInterval(-120 * 86_400)
+
+        // Appended-to log dir: old own mtime, fresh nested file.
+        try s.file("Library/Logs/Homebrew/old.log", modified: old)
+        try s.file("Library/Logs/Homebrew/sub/fresh.log", modified: now)
+        _ = try s.dir("Library/Logs/Homebrew/sub", modified: old)
+        _ = try s.dir("Library/Logs/Homebrew", modified: old)
+        try s.file("Library/Logs/AllOld/a.log", modified: old)
+        _ = try s.dir("Library/Logs/AllOld", modified: old)
+        try s.file("Library/Developer/Xcode/iOS DeviceSupport/16.0/Symbols/new.sym", modified: now)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/16.0/Symbols", modified: old)
+        _ = try s.dir("Library/Developer/Xcode/iOS DeviceSupport/16.0", modified: old)
+        try s.file("Downloads/Mixed/fresh.txt", modified: now)
+        _ = try s.dir("Downloads/Mixed", modified: old)
+        try s.file("Downloads/OldDir/a.txt", modified: old)
+        _ = try s.dir("Downloads/OldDir", modified: old)
+
+        let cats = Dictionary(uniqueKeysWithValues: Rules.categories(home: h).map { ($0.id, $0) })
+        #expect(Set(cats["logs"]?.items.map(\.path) ?? []) == [h + "/Library/Logs/AllOld"])
+        #expect(cats["simulators"] == nil)
+        #expect(cats["downloads"]?.items.map(\.path) == [h + "/Downloads/OldDir"])
+    }
+
+    @Test func excludedPathsAreNeverOffered() async throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let h = s.root
+        try s.file("Library/Caches/com.one/blob.bin")
+        try s.file("Library/Caches/com.two/x")
+        try s.file(".Trash/a/deep/b.bin")
+        try s.file(".Trash/keep.bin")
+
+        let ex: Set<String> = [h + "/Library/Caches/COM.ONE", h + "/.Trash/a/deep"]
+        let cats = await Rules.discover(home: h, excluded: ex)
+        let paths = Set(cats.flatMap { $0.items.map(\.path) })
+        #expect(paths.contains(h + "/Library/Caches/com.two"))
+        #expect(paths.contains(h + "/.Trash/keep.bin"))
+        #expect(!paths.contains(h + "/Library/Caches/com.one"))
+        #expect(!paths.contains { $0.hasPrefix(h + "/.Trash/a") }, "dir containing an excluded path is not offered")
+    }
+
+    @Test func largeFilesHonorExcluded() {
+        let home = "/Users/tester"
+        let t = DiskTree(rootPath: home)
+        let docs = t.add(name: "Documents", parent: 0, isDir: true)
+        t.add(name: "a.bin", parent: docs, isDir: false, size: 2_000)
+        t.add(name: "b.bin", parent: docs, isDir: false, size: 3_000)
+        t.add(name: "c.bin", parent: 0, isDir: false, size: 4_000)
+
+        let cat = Rules.largeFiles(from: t, home: home, minBytes: 1_000, excluded: [home + "/documents/A.bin", home + "/c.bin"])
+        #expect(cat?.items.map(\.path) == [home + "/Documents/b.bin"])
+        #expect(Rules.largeFiles(from: t, home: home, minBytes: 1_000, excluded: [home + "/Documents", home + "/c.bin"]) == nil)
+    }
 }

@@ -250,6 +250,11 @@ public final class AppModel {
     public var onEmptyTrash: (([CleanItem]) -> Void)?  // permanent delete of ~/.Trash children only; UI must confirm first
     public var lastResult: CleanResult?
     public var cleaning = false                    // true while a cleanup runs; UI disables destructive buttons
+    public var snapshotCount = 0                   // Time Machine local snapshots found (0 = none/unknown)
+    public var snapshotSummary: String?            // e.g. "3 snapshots, oldest Oct 12"; nil when none
+    public var onDeleteSnapshots: (() -> Void)?    // PERMANENT delete via tmutil; UI must confirm first
+    public var onRefreshSnapshots: (() -> Void)?
+    public var snapshotMessage: String?            // outcome of the last snapshot delete, e.g. "Deleted 3 snapshots"
     public var discovering = false                 // true from rescan start until categories are republished
     public init() {}
 }
