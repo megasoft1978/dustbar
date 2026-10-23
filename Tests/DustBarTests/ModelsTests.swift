@@ -82,3 +82,9 @@ private func cat(_ id: String, _ paths: [String]) -> CleanCategory {
     #expect(!AppModel().cleaning)
     #expect(!CleanResult().permanent)
 }
+
+@MainActor @Test func discoveringDefaultsOff() {
+    let model = AppModel()
+    #expect(!model.discovering)
+    #expect(!model.scanning && !model.cleaning)
+}

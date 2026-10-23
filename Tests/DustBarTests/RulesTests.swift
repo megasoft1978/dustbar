@@ -90,6 +90,14 @@ final class Scratch {
         }
     }
 
+    @Test func deniesCloudFolderRootsAndChildren() {
+        for sub in ["Dropbox", "Google Drive", "OneDrive", "iCloud Drive (Archive)"] {
+            #expect(Rules.isDenied(home + "/" + sub, home: home), "\(sub) should be denied")
+            #expect(Rules.isDenied(home + "/" + sub + "/projects/a.bin", home: home), "\(sub) child should be denied")
+        }
+        #expect(!Rules.isDenied(home + "/Dropbox-notes.txt", home: home))
+    }
+
     @Test func deniesExactHomeRoots() {
         let roots = [
             "Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", ".ssh", ".gnupg", ".aws",
@@ -283,6 +291,28 @@ final class Scratch {
         let none = DiskTree(rootPath: home)
         none.add(name: "small.bin", parent: 0, isDir: false, size: 10)
         #expect(Rules.largeFiles(from: none, home: home) == nil)
+    }
+
+    @Test func largeFilesSkipEmptyNamedNodes() {
+        let home = "/Users/tester"
+        let t = DiskTree(rootPath: home)
+        let docs = t.add(name: "Documents", parent: 0, isDir: true)
+        t.add(name: "", parent: docs, isDir: false, size: 9_000)       // path(of:) would be Documents itself
+        t.add(name: "", parent: 0, isDir: false, size: 9_000)          // path(of:) would be home itself
+        t.add(name: "big.bin", parent: docs, isDir: false, size: 2_000)
+
+        let cat = Rules.largeFiles(from: t, home: home, minBytes: 1_000)
+        #expect(cat?.items.map(\.path) == [home + "/Documents/big.bin"])
+    }
+
+    @Test func trashChildBundlesAllowedOthersStillDenied() {
+        #expect(!Rules.isDeniedTrashChild(home + "/.Trash/Old.app", home: home))
+        #expect(!Rules.isDeniedTrashChild(home + "/.Trash/Photos.photoslibrary", home: home))
+        #expect(Rules.isDeniedTrashChild(home + "/.Trash/Old.app/Contents/x", home: home))
+        #expect(Rules.isDeniedTrashChild(home + "/Documents/Old.app/Contents/x", home: home))
+        #expect(Rules.isDeniedTrashChild(home + "/.Trash/Old.app/Inner.app", home: home))
+        #expect(Rules.isDeniedTrashChild(home + "/.Trash", home: home))
+        #expect(Rules.isDeniedTrashChild(home + "/.ssh/key", home: home))
     }
 
     @Test func discoverSkipsEmptyHome() async throws {

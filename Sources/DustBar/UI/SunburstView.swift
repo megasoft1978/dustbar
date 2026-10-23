@@ -82,6 +82,12 @@ public enum SunburstLayout {
         return out.reversed()
     }
 
+    /// `id` only when it indexes `tree`: a rescan can swap in a smaller tree while a hover id is still set.
+    static func valid(_ id: NodeID?, in tree: DiskTree) -> NodeID? {
+        guard let id, Int(id) < tree.count else { return nil }
+        return id
+    }
+
     public static func title(_ tree: DiskTree, _ node: NodeID) -> String {
         if node == 0 {
             let base = (tree.rootPath as NSString).lastPathComponent
@@ -295,7 +301,7 @@ public struct SunburstView: View {
     }
 
     private func centerLabel(side: CGFloat) -> some View {
-        let node = hoverID ?? cur
+        let node = SunburstLayout.valid(hoverID, in: tree) ?? cur
         return VStack(spacing: 2) {
             Text(live ? "Scanning…" : SunburstLayout.title(tree, node))
                 .font(.caption.weight(.semibold))

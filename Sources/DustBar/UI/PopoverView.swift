@@ -171,7 +171,7 @@ public struct PopoverView: View {
                     .dustCard()
                 // Only the list scrolls, inside the space left under the chart.
                 TopList(tree: tree, current: $current, revision: rev, live: model.isLiveSnapshot,
-                        onClean: { model.onClean?($0) }, busy: model.cleaning)
+                        onClean: { model.onClean?($0) }, busy: model.cleaning, cached: model.cachedAt != nil)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .frame(maxHeight: .infinity, alignment: .top)

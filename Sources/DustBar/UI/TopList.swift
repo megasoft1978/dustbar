@@ -48,6 +48,7 @@ struct TopList: View {
     let live: Bool                 // partial snapshot: rows animate but drill is off
     var onClean: ([CleanItem]) -> Void
     var busy = false               // a cleanup is running: Move to Trash is disabled
+    var cached = false             // tree came from the on-disk cache and may be stale or tampered: no actions
     @State private var rows: [TopRow] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pendingTrash: TopRow?
@@ -84,13 +85,13 @@ struct TopList: View {
                     ForEach(rows, id: \.path) { row in
                         rowView(row)
                             .contextMenu {
-                                if row.canAct {
+                                if row.canAct && !cached {
                                     Button("Reveal in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
                                     }
                                     if !Rules.isDenied(row.path) {
                                         Button("Move to Trash", role: .destructive) { pendingTrash = row }
-                                        .disabled(busy)
+                                        .disabled(busy || cached)
                                     }
                                 }
                             }
@@ -108,7 +109,7 @@ struct TopList: View {
             Button("Move to Trash", role: .destructive) {
                 onClean([CleanItem(path: row.path, bytes: row.bytes)])
             }
-            .disabled(busy)
+            .disabled(busy || cached)
         } message: { row in
             Text("\(row.name) (\(ByteText.string(row.bytes))) will be moved to the Trash.")
         }

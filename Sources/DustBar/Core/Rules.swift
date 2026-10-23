@@ -9,6 +9,7 @@ public enum Rules {
         "Library/Keychains", "Library/Mail", "Library/Mobile Documents", "Library/Messages",
         "Library/Application Support", "Library/Containers", "Library/Group Containers",
         "Library/Preferences", "Library/CloudStorage", "Library/Safari", "Library/Cookies", "Library/Calendars", "Music", ".ssh", ".gnupg", ".aws",
+        "Dropbox", "Google Drive", "OneDrive", "iCloud Drive (Archive)",
     ]
     /// Denied only when the path is exactly this root-relative location ("" is the root). Children stay allowed.
     private static let rootDeniedExact = [
@@ -28,11 +29,17 @@ public enum Rules {
         denied(path, home: home, roots: roots)
     }
 
-    private static func denied(_ path: String, home: String, roots: [String]) -> Bool {
+    /// For a direct child of ~/.Trash only: the bundle-name rule skips the final component, so a trashed
+    /// .app or .photoslibrary can be emptied. Every other check still applies, including bundles above it.
+    static func isDeniedTrashChild(_ path: String, home: String) -> Bool {
+        denied(path, home: home, roots: [], trashChild: true)
+    }
+
+    private static func denied(_ path: String, home: String, roots: [String], trashChild: Bool = false) -> Bool {
         guard path.hasPrefix("/") else { return true }
         let lex = key(lexical(path))
         let phys = key(physical(path))
-        if [lex, phys].contains(where: { $0.split(separator: "/").contains { $0.hasSuffix(".app") || $0.hasSuffix(".photoslibrary") } }) {
+        if [lex, phys].contains(where: { hasBundleName($0, skipLeaf: trashChild) }) {
             return true
         }
         var matched: [(lex: String, phys: String)] = []
@@ -73,7 +80,9 @@ public enum Rules {
         var items: [CleanItem] = []
         for i in 1..<tree.count where !tree.isDir[i] && tree.size[i] >= minBytes {
             let id = NodeID(i)
-            guard tree.name(id) != smallFilesName else { continue }
+            // An empty name would make path(of:) return the parent directory, so such a node is never offered.
+            let name = tree.name(id)
+            guard !name.isEmpty, name != smallFilesName else { continue }
             let p = tree.path(of: id)
             guard !within(key(lexical(p)), libraryKey), !isDenied(p, home: home) else { continue }
             items.append(CleanItem(path: p, bytes: tree.size[i]))
@@ -268,6 +277,13 @@ public enum Rules {
 
     /// Case-insensitive, Unicode-normalized form used for every comparison (APFS is case-insensitive, case-preserving).
     private static func key(_ s: String) -> String { s.precomposedStringWithCanonicalMapping.lowercased() }
+
+    /// True when a keyed path has an app or photo-library bundle component (the final one optionally ignored).
+    private static func hasBundleName(_ p: String, skipLeaf: Bool) -> Bool {
+        var parts = p.split(separator: "/")
+        if skipLeaf { _ = parts.popLast() }
+        return parts.contains { $0.hasSuffix(".app") || $0.hasSuffix(".photoslibrary") }
+    }
 
     /// Both arguments must already be keyed.
     private static func within(_ p: String, _ base: String) -> Bool { p == base || p.hasPrefix(base + "/") }

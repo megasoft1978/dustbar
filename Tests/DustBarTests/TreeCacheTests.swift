@@ -54,10 +54,67 @@ private func tempFile() -> URL {
     let root = NSTemporaryDirectory()
     let tree = DiskTree(rootPath: root)
     tree.add(name: "x", parent: 0, isDir: false, size: 5)
+    tree.rollUp()
     #expect(TreeCache.save(tree, device: TreeCache.deviceID(of: root)!, to: url))
     let loaded = try #require(TreeCache.load(root: root, from: url))
     #expect(loaded.tree.count == 2)
     try Data("garbage".utf8).write(to: url)
     #expect(TreeCache.load(root: root, from: url) == nil)
     #expect(TreeCache.load(root: root, from: url.appendingPathExtension("missing")) == nil)
+}
+
+// MARK: - Malicious cache rejection
+
+private typealias Cols = DiskTree.Columns
+
+private func goodColumns() -> Cols { sampleTree().columns }
+
+/// Re-encodes mutated columns by building a tree with arbitrary links (bypasses add()).
+private func decodeMutated(_ edit: (inout Cols) -> Void) -> DiskTree? {
+    var c = goodColumns()
+    edit(&c)
+    return DiskTree(rootPath: "/tmp/root", columns: c)
+}
+
+private func renamed(_ c: inout Cols, node: Int, to name: String) {
+    c.nameOff[node] = UInt32(c.arena.count)
+    c.nameLen[node] = UInt16(name.utf8.count)
+    c.arena.append(contentsOf: Array(name.utf8))
+}
+
+@Test func validColumnsAccepted() { #expect(decodeMutated { _ in } != nil) }
+
+@Test func rejectsCyclicSiblingChain() {
+    // nodes: 0 root, 1 a, 2 big.bin, 3 (small files), 4 ünï.txt; make a's children loop 3 -> 2.
+    #expect(decodeMutated { $0.nextSibling[Int($0.firstChild[1])] = $0.firstChild[1] } == nil)
+    #expect(decodeMutated { $0.nextSibling[1] = 4 } == nil)
+}
+
+@Test func rejectsCyclicParentChain() {
+    #expect(decodeMutated { $0.parent[1] = 4; $0.parent[4] = 1 } == nil)
+    #expect(decodeMutated { $0.parent[2] = 2 } == nil)
+}
+
+@Test func rejectsBadNames() {
+    for bad in ["..", ".", "", "a/b", "../x", "a\u{0}b"] {
+        #expect(decodeMutated { renamed(&$0, node: 4, to: bad) } == nil, "name \(bad.debugDescription)")
+    }
+}
+
+@Test func rejectsChildLargerThanParent() {
+    #expect(decodeMutated { $0.size[2] = 301 } == nil)
+}
+
+@Test func rejectsUnreachableNode() {
+    #expect(decodeMutated { $0.nextSibling[4] = noNode } == nil)   // orphans node 1 and its subtree
+}
+
+@Test func boundedTraversalOnCyclicTree() {
+    let t = DiskTree(rootPath: "/r")
+    let a = t.add(name: "a", parent: 0, isDir: true, size: 1)
+    let b = t.add(name: "b", parent: 0, isDir: true, size: 1)
+    t.adopt(a, under: 0)
+    t.adopt(b, under: a)   // parent cycle: a's parent is 0 but b -> a -> ... build loop below
+    #expect(t.children(of: 0).count <= t.count)
+    _ = t.path(of: b)
 }

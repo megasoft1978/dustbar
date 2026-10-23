@@ -144,7 +144,7 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
             attributes: [.foregroundColor: color, .font: NSFont.menuBarFont(ofSize: 0)]
         )
         button.toolTip = "\(Self.byteText(stats.used)) / \(Self.byteText(stats.total))"
-        lowDisk.evaluate(freeFraction: free, free: stats.free)
+        lowDisk.evaluate(stats)
     }
 
     private static func freeText(_ bytes: UInt64) -> String {
@@ -290,6 +290,7 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         let generation = scanGeneration
         discardLiveSnapshot()
         model.scanning = true
+        model.discovering = true   // until the categories below are republished; cleared on cancel too
         model.progress = ScanProgress()
         dirtyPaths.removeAll()
         needsFullRescan = false
@@ -331,6 +332,7 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
                 .union(defaults.subtracting(self.knownItemPaths))
             self.knownItemPaths = newPaths
             model.categories = categories
+            model.discovering = false
             model.progress.done = true
             self.scanTask = nil
             malloc_zone_pressure_relief(nil, 0)   // hand the walk's and hashing's freed pages back
@@ -393,6 +395,7 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
         scanGeneration += 1
         discardLiveSnapshot()
         model.scanning = false
+        model.discovering = false
     }
 
     private func clean(_ items: [CleanItem]) {
@@ -414,7 +417,8 @@ final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
             result.permanent = permanent
             model.cleaning = false
             model.lastResult = result
-            model.selectedItems = []
+            model.selectedItems = CleanSelection.droppingCleaned(model.selectedItems, result: result)
+            model.categories = []   // stale cards must not stay actionable while the rescan runs
             self.rescan(force: true)
         }
     }

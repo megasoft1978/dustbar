@@ -62,6 +62,13 @@ public enum CleanSelection {
         return Plan(trash: trash, rest: rest)
     }
 
+    /// After a cleanup: drops only the paths that were moved to Trash or refused. Failed paths stay selected.
+    public static func droppingCleaned(_ selected: Set<String>, result: CleanResult) -> Set<String> {
+        var gone = Set(result.trashed.map(\.path))
+        gone.formUnion(result.refused.map(\.path))
+        return selected.subtracting(gone)
+    }
+
     /// Expanded-list rows: the `limit` largest items, biggest first; `hidden` counts the rest.
     public static func listed(_ category: CleanCategory, limit: Int = listLimit) -> (shown: [CleanItem], hidden: Int) {
         let sorted = category.items.sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.path < $1.path }
@@ -99,24 +106,28 @@ public struct CleanView: View {
     public init(model: AppModel) { self.model = model }
 
     private var hasItems: Bool { model.categories.contains { !$0.items.isEmpty } }
+    /// Destructive actions wait until the categories match the latest scan and no cleanup is running.
+    private var busy: Bool { model.scanning || model.discovering || model.cleaning }
 
     public var body: some View {
         let plan = CleanSelection.plan(model.categories, selected: model.selectedItems)
         VStack(spacing: 0) {
             if let result = model.lastResult { resultBanner(result) }
-            if hasItems {
+            if model.discovering {
+                ProgressView("Analyzing…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if hasItems {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(model.categories) { categoryCard($0) }
                     }
                     .padding(12)
                 }
-                footer(plan)
             } else if model.scanning {
                 ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 emptyState
             }
+            if hasItems { footer(plan) }
         }
         .confirmationDialog(
             "Move \(CleanSelection.format(plan.restBytes)) to Trash?",
@@ -262,7 +273,7 @@ public struct CleanView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .controlSize(.large)
-                .disabled(model.scanning || model.cleaning)
+                .disabled(busy)
             }
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -284,7 +295,7 @@ public struct CleanView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(plan.rest.isEmpty || model.scanning || model.cleaning)
+                .disabled(plan.rest.isEmpty || busy)
             }
         }
         .padding(12)

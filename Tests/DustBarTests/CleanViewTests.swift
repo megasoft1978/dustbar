@@ -121,3 +121,14 @@ private func category(_ id: String, _ items: [(String, UInt64)]) -> CleanCategor
     #expect(small.shown.map(\.path) == ["/b", "/a"])
     #expect(small.hidden == 0)
 }
+
+@Test func droppingCleanedKeepsUnrelatedAndFailedSelection() {
+    let result = CleanResult(
+        trashed: [CleanItem(path: "/a", bytes: 1)],
+        refused: [CleanItem(path: "/sys", bytes: 1)],
+        failed: [(CleanItem(path: "/busy", bytes: 1), "busy")]
+    )
+    let selected: Set<String> = ["/a", "/sys", "/busy", "/other"]
+    #expect(CleanSelection.droppingCleaned(selected, result: result) == ["/busy", "/other"])
+    #expect(CleanSelection.droppingCleaned([], result: result).isEmpty)
+}

@@ -106,6 +106,8 @@ public enum Duplicates {
         var stack: [NodeID] = [0]
         while let id = stack.popLast() {
             if Task.isCancelled { return nil }
+            // An empty name would make path(of:) return the parent directory, so such a node is never offered.
+            guard id == 0 || !tree.name(id).isEmpty else { continue }
             if tree.isDir[Int(id)] {
                 stack.append(contentsOf: tree.children(of: id))
                 continue

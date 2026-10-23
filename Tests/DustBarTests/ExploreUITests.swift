@@ -235,6 +235,19 @@ final class ExploreUITests: XCTestCase {
         window.orderOut(nil)
         XCTAssertEqual(current, 0)
     }
+
+    func testStaleHoverIDIsIgnoredAfterTreeShrinks() {
+        let (t, _, _, _, _, _, _) = makeTree()
+        let small = DiskTree(rootPath: "/y")
+        small.add(name: "only", parent: 0, isDir: false, size: 1)
+        small.rollUp()
+        // An id from the big tree that no longer exists in the smaller one.
+        let stale = NodeID(t.count - 1)
+        XCTAssertNil(SunburstLayout.valid(stale, in: small))
+        XCTAssertNil(SunburstLayout.valid(nil, in: small))
+        XCTAssertEqual(SunburstLayout.valid(0, in: small), 0)
+        XCTAssertEqual(SunburstLayout.valid(stale, in: t), stale)
+    }
 }
 
 /// Renders the popover to PNG files for visual review. Runs only when DUSTBAR_SNAPSHOT_DIR is set.
@@ -318,5 +331,4 @@ final class PopoverSnapshotTests: XCTestCase {
             }
         }
     }
-
 }

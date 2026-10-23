@@ -48,7 +48,7 @@ public enum Cleaner {
         }
         let trashDir = Rules.physical(home + "/.Trash")
         for item in items {
-            guard let c = Rules.resolvedChild(item.path), c.dir == trashDir, !Rules.isDenied(c.path, home: home) else {
+            guard let c = Rules.resolvedChild(item.path), c.dir == trashDir, !Rules.isDeniedTrashChild(c.path, home: home) else {
                 result.refused.append(item)
                 continue
             }

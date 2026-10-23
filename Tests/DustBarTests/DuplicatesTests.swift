@@ -149,6 +149,25 @@ import Testing
         #expect(items.allSatisfy { $0.path.hasPrefix(s.path("projects/")) })
     }
 
+    @Test func emptyNamedNodesNeverOffered() async throws {
+        let s = try Fixture()
+        defer { s.cleanup() }
+        let pair = blob(300_000)
+        try s.write("projects/x.bin", pair)
+        try s.write("projects/y.bin", pair)
+        let t = tree(s.root, [("projects/x.bin", 300_000), ("projects/y.bin", 300_000)])
+        // Empty-named duplicates: path(of:) would resolve them to the parent directory, which must never be offered.
+        let projects = t.children(of: 0).first { t.name($0) == "projects" }!
+        t.add(name: "", parent: projects, isDir: false, size: 300_000)
+        t.add(name: "", parent: 0, isDir: false, size: 300_000)
+
+        let cats = await Duplicates.find(tree: t, minBytes: 100_000, home: s.root, roots: [])
+
+        let items = try #require(cats.first).items
+        #expect(items.count == 1)
+        #expect(items.allSatisfy { $0.path.hasPrefix(s.path("projects/")) && $0.path != s.path("projects") })
+    }
+
     @Test func excludedAndNestedPathsNeverOffered() async throws {
         let s = try Fixture()
         defer { s.cleanup() }

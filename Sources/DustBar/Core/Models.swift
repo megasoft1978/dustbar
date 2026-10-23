@@ -130,7 +130,31 @@ public final class DiskTree: @unchecked Sendable {
             for link in [c.firstChild[i], c.nextSibling[i]] where link != noNode && Int(link) >= n { return nil }
             if i > 0, c.parent[i] != noNode, Int(c.parent[i]) >= n { return nil }
             if Int(c.nameOff[i]) + Int(c.nameLen[i]) > c.arena.count { return nil }
+            if i > 0 {
+                // Names must be a single plain path component, or displayed paths diverge from what Cleaner acts on.
+                let o = Int(c.nameOff[i]), l = Int(c.nameLen[i])
+                if l == 0 || c.arena[o..<o + l].contains(where: { $0 == 0x2F || $0 == 0 }) { return nil }
+                if l <= 2, c.arena[o..<o + l].allSatisfy({ $0 == 0x2E }) { return nil }
+            }
         }
+        // Walk the tree from the root: every node must be reached exactly once through consistent links.
+        var visited = [Bool](repeating: false, count: n)
+        visited[0] = true
+        var reached = 1
+        var stack: [Int] = [0]
+        while let node = stack.popLast() {
+            var child = c.firstChild[node]
+            if child != noNode && !c.isDir[node] { return nil }
+            while child != noNode {
+                let ci = Int(child)
+                if visited[ci] || Int(c.parent[ci]) != node || c.size[ci] > c.size[node] { return nil }
+                visited[ci] = true
+                reached += 1
+                stack.append(ci)
+                child = c.nextSibling[ci]
+            }
+        }
+        guard reached == n, c.nextSibling[0] == noNode else { return nil }
         self.init(rootPath: rootPath)
         parent = c.parent; firstChild = c.firstChild; nextSibling = c.nextSibling
         size = c.size; isDir = c.isDir; nameOff = c.nameOff; nameLen = c.nameLen; arena = c.arena
@@ -146,14 +170,14 @@ public final class DiskTree: @unchecked Sendable {
     public func children(of id: NodeID) -> [NodeID] {
         var out: [NodeID] = []
         var c = firstChild[Int(id)]
-        while c != noNode { out.append(c); c = nextSibling[Int(c)] }
+        while c != noNode && out.count < count { out.append(c); c = nextSibling[Int(c)] }   // bounded: a cyclic chain can't hang
         return out
     }
 
     public func path(of id: NodeID) -> String {
         var parts: [String] = []
         var cur = id
-        while cur != 0 && cur != noNode { parts.append(name(cur)); cur = parent[Int(cur)] }
+        while cur != 0 && cur != noNode && parts.count < count { parts.append(name(cur)); cur = parent[Int(cur)] }   // bounded: a parent cycle can't hang
         return ([rootPath] + parts.reversed()).joined(separator: "/").replacingOccurrences(of: "//", with: "/")
     }
 }
@@ -226,5 +250,6 @@ public final class AppModel {
     public var onEmptyTrash: (([CleanItem]) -> Void)?  // permanent delete of ~/.Trash children only; UI must confirm first
     public var lastResult: CleanResult?
     public var cleaning = false                    // true while a cleanup runs; UI disables destructive buttons
+    public var discovering = false                 // true from rescan start until categories are republished
     public init() {}
 }

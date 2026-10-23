@@ -53,13 +53,14 @@ final class LowDiskAlert {
         armed = true   // a new level is evaluated from scratch on the next stats update
     }
 
-    /// Called on every stats update (no timer; the Monitor drives it).
-    func evaluate(freeFraction: Double, free: UInt64) {
-        guard threshold != .off else { return }
+    /// Called on every stats update (no timer; the Monitor drives it). A failed stats read (`total == 0`) is ignored.
+    func evaluate(_ stats: VolumeStats) {
+        guard threshold != .off, stats.total > 0 else { return }
         let limit = threshold.rawValue
+        let freeFraction = stats.freeFraction
         if armed, freeFraction < limit {
             armed = false
-            notify(free: free)
+            notify(free: stats.free)
         } else if !armed, freeFraction > limit + Self.rearmMargin {
             armed = true
         }

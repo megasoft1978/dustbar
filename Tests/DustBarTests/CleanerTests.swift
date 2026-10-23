@@ -155,6 +155,26 @@ import Testing
         #expect(result.failed.map(\.0) == [ghost])
     }
 
+    @Test func emptyTrashRemovesBundlesDirectlyInTrashOnly() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let app = try s.file(".Trash/Old.app/Contents/Info.plist")
+        let photos = try s.dir(".Trash/Photos.photoslibrary")
+        let outside = try s.dir("Documents/Other.app")
+        let nestedApp = try s.dir(".Trash/folder/Inner.app")
+
+        let items = [".Trash/Old.app", ".Trash/Photos.photoslibrary", "Documents/Other.app", ".Trash/folder/Inner.app"]
+            .map { CleanItem(path: s.root + "/" + $0, bytes: 1) }
+        let result = Cleaner.emptyTrash(items, home: s.root)
+        #expect(result.trashed.map(\.path) == [s.root + "/.Trash/Old.app", s.root + "/.Trash/Photos.photoslibrary"])
+        #expect(result.refused.map(\.path) == [s.root + "/Documents/Other.app", s.root + "/.Trash/folder/Inner.app"])
+        #expect(result.failed.isEmpty)
+        #expect(!present(app))
+        #expect(!present(photos))
+        #expect(present(outside))
+        #expect(present(nestedApp))
+    }
+
     @Test func emptyTrashRefusesSymlinkedTrash() throws {
         let s = try Scratch()
         defer { s.cleanup() }
