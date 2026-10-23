@@ -8,12 +8,13 @@ public enum Cleaner {
     }
 
     /// Re-checks the denylist per item, then acts on the same resolved path it checked. Moves to the Trash via trashItem only.
-    /// `extraRoots` exists for tests; production never passes any.
-    public static func trash(_ items: [CleanItem], home: String, extraRoots: [String]) -> CleanResult {
+    /// Items already in ~/.Trash are refused, never re-trashed. `extraRoots` exists for tests; production never passes any.
+    static func trash(_ items: [CleanItem], home: String, extraRoots: [String]) -> CleanResult {
         var result = CleanResult()
         let fm = FileManager.default
         for item in items {
-            guard let c = Rules.resolvedChild(item.path), !Rules.isDenied(c.path, home: home, roots: extraRoots) else {
+            guard let c = Rules.resolvedChild(item.path), !Rules.isInTrash(c.path, home: home),
+                  !Rules.isDenied(c.path, home: home, roots: extraRoots) else {
                 result.refused.append(item)
                 continue
             }
@@ -39,6 +40,12 @@ public enum Cleaner {
     public static func emptyTrash(_ items: [CleanItem], home: String = NSHomeDirectory()) -> CleanResult {
         var result = CleanResult()
         let fm = FileManager.default
+        // ~/.Trash must be a real directory, not a symlink; otherwise refuse everything.
+        var trashSt = stat()
+        guard lstat(home + "/.Trash", &trashSt) == 0, (trashSt.st_mode & S_IFMT) == S_IFDIR else {
+            result.refused = items
+            return result
+        }
         let trashDir = Rules.physical(home + "/.Trash")
         for item in items {
             guard let c = Rules.resolvedChild(item.path), c.dir == trashDir, !Rules.isDenied(c.path, home: home) else {

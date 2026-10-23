@@ -4,6 +4,7 @@ import SwiftUI
 /// Radii are fractions of the half-side of the square the sunburst is drawn in.
 public struct SunburstArc: Equatable, Sendable {
     public let id: NodeID
+    public let path: String        // stable across snapshots; used to match arcs when morphing
     public let depth: Int          // 1...rings
     public let start: Double
     public let end: Double
@@ -15,7 +16,7 @@ public struct SunburstArc: Equatable, Sendable {
 
 /// Pure geometry: layout over a DiskTree plus hit-testing. No UI state.
 public enum SunburstLayout {
-    public static let holeRadius = 0.30
+    public static let holeRadius = 0.40
     public static let ringGap = 0.01
     public static let minFraction = 0.005   // skip arcs below 0.5% of a full turn
 
@@ -43,7 +44,7 @@ public enum SunburstLayout {
             let span = sweep * Double(s) / Double(parentSize)
             if span < minSweep { a += span; continue }
             let topID = top ?? c
-            out.append(SunburstArc(id: c, depth: depth, start: a, end: a + span,
+            out.append(SunburstArc(id: c, path: tree.path(of: c), depth: depth, start: a, end: a + span,
                                    inner: innerR + ringGap / 2, outer: innerR + ring - ringGap / 2,
                                    hue: hue(for: topID), isDir: tree.isDir[Int(c)]))
             if tree.isDir[Int(c)] {
@@ -90,6 +91,7 @@ public enum SunburstLayout {
     }
 }
 
+
 /// Identity of a layout input; arcs are recomputed only when this changes.
 struct SunburstLayoutKey: Equatable {
     let tree: ObjectIdentifier
@@ -98,21 +100,86 @@ struct SunburstLayoutKey: Equatable {
     let revision: UInt64
 }
 
+/// Pure morph between two layouts of successive live snapshots, matched by path.
+public enum SunburstTween {
+    public static let duration = 0.8
+
+    /// Cubic ease-in-out over linear progress `t` (clamped to 0...1).
+    public static func ease(_ t: Double) -> Double {
+        let x = min(max(t, 0), 1)
+        return x < 0.5 ? 4 * x * x * x : 1 - pow(-2 * x + 2, 3) / 2
+    }
+
+    /// Arcs at linear progress `t`: matched arcs ease from their `prev` geometry to `next`;
+    /// unmatched arcs grow out of their own midpoint from zero width; arcs that vanished are dropped.
+    /// t = 0 gives the `prev` geometry, t = 1 gives `next`.
+    public static func interpolate(prev: [SunburstArc], next: [SunburstArc], t: Double) -> [SunburstArc] {
+        let e = ease(t)
+        var byPath: [String: SunburstArc] = [:]
+        byPath.reserveCapacity(prev.count)
+        for arc in prev { byPath[arc.path] = arc }
+        return next.map { n in
+            if let p = byPath[n.path] {
+                return n.with(start: lerp(p.start, n.start, e), end: lerp(p.end, n.end, e),
+                              inner: lerp(p.inner, n.inner, e), outer: lerp(p.outer, n.outer, e))
+            }
+            let mid = (n.start + n.end) / 2
+            return n.with(start: lerp(mid, n.start, e), end: lerp(mid, n.end, e), inner: n.inner, outer: n.outer)
+        }
+    }
+
+    private static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+}
+
+private extension SunburstArc {
+    func with(start: Double, end: Double, inner: Double, outer: Double) -> SunburstArc {
+        SunburstArc(id: id, path: path, depth: depth, start: start, end: end,
+                    inner: inner, outer: outer, hue: hue, isDir: isDir)
+    }
+}
+
+private struct ArcShape: Shape {
+    let arc: SunburstArc
+
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let R = min(rect.width, rect.height) / 2
+        var p = Path()
+        p.addArc(center: c, radius: arc.outer * R, startAngle: .radians(arc.start - .pi / 2),
+                 endAngle: .radians(arc.end - .pi / 2), clockwise: false)
+        p.addArc(center: c, radius: arc.inner * R, startAngle: .radians(arc.end - .pi / 2),
+                 endAngle: .radians(arc.start - .pi / 2), clockwise: true)
+        p.closeSubpath()
+        return p
+    }
+}
+
 public struct SunburstView: View {
     let tree: DiskTree
     @Binding var current: NodeID
     let revision: UInt64           // root size; changes while scanning so the layout refreshes
-    @State private var arcs: [SunburstArc] = []
+    let live: Bool                 // true while `tree` is a partial snapshot: no hover, no drill
+    @State private var shown: [SunburstArc] = []      // layout of the latest tree
+    @State private var previous: [SunburstArc] = []   // layout the current morph starts from
+    @State private var startedAt = Date.distantPast
+    @State private var animating = false
+    @State private var epoch = 0
+    @State private var lastRoot: NodeID = noNode
     @State private var hoverID: NodeID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(tree: DiskTree, current: Binding<NodeID>, revision: UInt64) {
+    public init(tree: DiskTree, current: Binding<NodeID>, revision: UInt64, live: Bool = false) {
         self.tree = tree
         self._current = current
         self.revision = revision
+        self.live = live
     }
 
+    /// `current` clamped to `tree`: a rescan can swap in a smaller tree while the old id is still set.
+    private var cur: NodeID { current < tree.count ? current : 0 }
+
     private var key: SunburstLayoutKey {
-        SunburstLayoutKey(tree: ObjectIdentifier(tree), root: current, count: tree.count, revision: revision)
+        SunburstLayoutKey(tree: ObjectIdentifier(tree), root: cur, count: tree.count, revision: revision)
     }
 
     public var body: some View {
@@ -122,25 +189,7 @@ public struct SunburstView: View {
                 let w = geo.size.width, h = geo.size.height
                 let side = min(w, h)
                 ZStack {
-                    Canvas { ctx, size in
-                        let c = CGPoint(x: size.width / 2, y: size.height / 2)
-                        let R = min(size.width, size.height) / 2
-                        for arc in arcs {
-                            var p = Path()
-                            p.addArc(center: c, radius: arc.outer * R,
-                                     startAngle: .radians(arc.start - .pi / 2),
-                                     endAngle: .radians(arc.end - .pi / 2), clockwise: false)
-                            p.addArc(center: c, radius: arc.inner * R,
-                                     startAngle: .radians(arc.end - .pi / 2),
-                                     endAngle: .radians(arc.start - .pi / 2), clockwise: true)
-                            p.closeSubpath()
-                            let base = Color(hue: arc.hue, saturation: 0.55,
-                                             brightness: 0.95 - 0.08 * Double(arc.depth - 1))
-                            let hovered = arc.id == hoverID
-                            ctx.fill(p, with: .color(base.opacity(hovered ? 1 : 0.85)))
-                            if hovered { ctx.stroke(p, with: .color(.primary.opacity(0.8)), lineWidth: 1.5) }
-                        }
-                    }
+                    plot
                     centerLabel(side: side)
                 }
                 .frame(width: w, height: h)
@@ -149,7 +198,7 @@ public struct SunburstView: View {
                     switch phase {
                     case .active(let p):
                         let (x, y) = normalized(p, w: w, h: h)
-                        let id = SunburstLayout.hit(arcs, x: x, y: y)?.id
+                        let id = live ? nil : hitArc(x: x, y: y)?.id
                         if id != hoverID { hoverID = id }
                     case .ended:
                         if hoverID != nil { hoverID = nil }
@@ -160,12 +209,67 @@ public struct SunburstView: View {
         }
         .onAppear(perform: refresh)
         .onChange(of: key) { refresh() }
+        .onChange(of: live) { hoverID = nil }
+        .task(id: epoch) {
+            guard epoch > 0 else { return }
+            try? await Task.sleep(for: .milliseconds(Int(SunburstTween.duration * 1000) + 50))
+            if !Task.isCancelled { animating = false }
+        }
+    }
+
+    /// Static ring when idle; a per-frame morph only while live or within the settle window.
+    /// The timeline pauses once the morph settles, so a long live scan does not redraw every frame.
+    @ViewBuilder
+    private var plot: some View {
+        if !reduceMotion && (animating || live) {
+            TimelineView(.animation(paused: !animating)) { timeline in
+                ring(animating ? SunburstTween.interpolate(prev: previous, next: shown, t: progress(at: timeline.date)) : shown)
+            }
+        } else {
+            ring(shown)
+        }
+    }
+
+    /// Plain shape layers instead of a Canvas: a Canvas redrawn on every snapshot kept ~190 MB of
+    /// graphics backing stores alive while the popover was open.
+    private func ring(_ arcs: [SunburstArc]) -> some View {
+        ZStack {
+            ForEach(arcs, id: \.path) { arc in
+                let hovered = arc.id == hoverID
+                let base = Color(hue: arc.hue, saturation: 0.55, brightness: 0.95 - 0.08 * Double(arc.depth - 1))
+                ArcShape(arc: arc)
+                    .fill(base.opacity(hovered ? 1 : 0.85))
+                    .overlay { if hovered { ArcShape(arc: arc).stroke(Color.primary.opacity(0.8), lineWidth: 1.5) } }
+            }
+        }
     }
 
     private func refresh() {
         if current >= tree.count { current = 0 }
-        arcs = SunburstLayout.arcs(tree: tree, root: current)
+        let next = SunburstLayout.arcs(tree: tree, root: cur)
+        // Morph only between snapshots of the same root; drilling or first paint snaps.
+        let animate = !reduceMotion && cur == lastRoot && !shown.isEmpty
+        // A snapshot landing mid-morph starts from the geometry on screen now, not from the old target.
+        let onScreen = animating ? SunburstTween.interpolate(prev: previous, next: shown, t: progress(at: Date())) : shown
+        lastRoot = cur
+        previous = animate ? onScreen : next
+        shown = next
+        startedAt = Date()
         hoverID = nil
+        if animate {
+            animating = true
+            epoch += 1
+        }
+    }
+
+    private func progress(at date: Date) -> Double {
+        date.timeIntervalSince(startedAt) / SunburstTween.duration
+    }
+
+    /// Arc under a point, ignoring any arc whose id is outside `tree` (layout left over from a replaced tree).
+    private func hitArc(x: Double, y: Double) -> SunburstArc? {
+        guard let arc = SunburstLayout.hit(shown, x: x, y: y), Int(arc.id) < tree.count else { return nil }
+        return arc
     }
 
     private func normalized(_ p: CGPoint, w: CGFloat, h: CGFloat) -> (Double, Double) {
@@ -174,53 +278,64 @@ public struct SunburstView: View {
     }
 
     private func tap(_ p: CGPoint, w: CGFloat, h: CGFloat) {
+        guard !live else { return }
         let (x, y) = normalized(p, w: w, h: h)
         if (x * x + y * y).squareRoot() < SunburstLayout.holeRadius {
-            if current != 0 {
-                let parent = tree.parent[Int(current)]
+            if cur != 0 {
+                let parent = tree.parent[Int(cur)]
                 current = parent == noNode ? 0 : parent
                 hoverID = nil
             }
             return
         }
-        if let arc = SunburstLayout.hit(arcs, x: x, y: y), arc.isDir {
+        if let arc = hitArc(x: x, y: y), arc.isDir {
             current = arc.id
             hoverID = nil
         }
     }
 
     private func centerLabel(side: CGFloat) -> some View {
-        let shown = hoverID ?? current
+        let node = hoverID ?? cur
         return VStack(spacing: 2) {
-            Text(SunburstLayout.title(tree, shown))
+            Text(live ? "Scanning…" : SunburstLayout.title(tree, node))
                 .font(.caption.weight(.semibold))
                 .lineLimit(1).truncationMode(.middle)
-            Text(ByteText.string(tree.size[Int(shown)]))
+            Text(ByteText.string(tree.size[Int(node)]))
                 .font(.system(.body, design: .rounded).weight(.bold))
                 .monospacedDigit()
+                .contentTransition(.numericText())
         }
         .padding(.horizontal, 4)
-        .frame(width: side * SunburstLayout.holeRadius * 1.7)
+        // Hole diameter is holeRadius * side; keep the label inside it.
+        .frame(width: side * SunburstLayout.holeRadius * 0.8)
         .allowsHitTesting(false)
     }
 
     private var breadcrumb: some View {
-        let nodes = SunburstLayout.chain(tree, current)
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(Array(nodes.enumerated()), id: \.element) { i, node in
-                    if i > 0 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Button(SunburstLayout.title(tree, node)) { current = node; hoverID = nil }
+        let nodes = SunburstLayout.chain(tree, cur)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(Array(nodes.enumerated()), id: \.element) { i, node in
+                        if i > 0 {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Button(SunburstLayout.title(tree, node)) {
+                            guard node != cur else { return }
+                            current = node
+                            hoverID = nil
+                        }
                         .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(node == current ? .primary : .secondary)
-                        .disabled(node == current)
+                        .disabled(live)
+                        .font(.caption.weight(node == cur ? .semibold : .regular))
+                        .foregroundStyle(node == cur ? .primary : .secondary)
+                        .id(node)
+                    }
                 }
             }
+            .onChange(of: cur) { proxy.scrollTo(cur, anchor: .trailing) }
         }
         .frame(height: 20)
     }

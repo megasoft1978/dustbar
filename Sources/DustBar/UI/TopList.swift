@@ -43,11 +43,15 @@ public enum TopListLayout {
 
 struct TopList: View {
     let tree: DiskTree
-    let current: NodeID
+    @Binding var current: NodeID
     let revision: UInt64           // root size; changes while scanning so rows refresh
+    let live: Bool                 // partial snapshot: rows animate but drill is off
     var onClean: ([CleanItem]) -> Void
+    var busy = false               // a cleanup is running: Move to Trash is disabled
     @State private var rows: [TopRow] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pendingTrash: TopRow?
+    @State private var hoverID: NodeID?
 
     private struct Key: Equatable {
         let tree: ObjectIdentifier
@@ -68,20 +72,32 @@ struct TopList: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 12)
+            } else {
+                Text("Largest here")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 6)
             }
-            ForEach(rows) { row in
-                rowView(row)
-                    .contextMenu {
-                        if row.canAct {
-                            Button("Reveal in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(rows, id: \.path) { row in
+                        rowView(row)
+                            .contextMenu {
+                                if row.canAct {
+                                    Button("Reveal in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
+                                    }
+                                    if !Rules.isDenied(row.path) {
+                                        Button("Move to Trash", role: .destructive) { pendingTrash = row }
+                                        .disabled(busy)
+                                    }
+                                }
                             }
-                            if !Rules.isDenied(row.path) {
-                                Button("Move to Trash", role: .destructive) { pendingTrash = row }
-                            }
-                        }
                     }
+                }
             }
+            .scrollIndicators(.never)
         }
         .confirmationDialog(
             "Move to Trash?",
@@ -92,6 +108,7 @@ struct TopList: View {
             Button("Move to Trash", role: .destructive) {
                 onClean([CleanItem(path: row.path, bytes: row.bytes)])
             }
+            .disabled(busy)
         } message: { row in
             Text("\(row.name) (\(ByteText.string(row.bytes))) will be moved to the Trash.")
         }
@@ -100,13 +117,17 @@ struct TopList: View {
     }
 
     private func refresh() {
-        rows = current < tree.count ? TopListLayout.rows(tree, of: current) : []
+        let next = current < tree.count ? TopListLayout.rows(tree, of: current) : []
+        let animation: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.35)
+        withAnimation(animation) { rows = next }
+        hoverID = nil
     }
 
     private func rowView(_ row: TopRow) -> some View {
-        HStack(spacing: 10) {
+        let hovered = hoverID == row.id
+        return HStack(spacing: 10) {
             Image(systemName: row.isDir ? "folder.fill" : "doc.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(row.isDir ? Color.accentColor : Color.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -124,12 +145,28 @@ struct TopList: View {
                         Capsule().fill(.quaternary)
                         Capsule()
                             .fill(Color.accentColor.gradient)
-                            .frame(width: max(2, geo.size.width * row.fraction))
+                            .frame(width: max(4, geo.size.width * row.fraction))
                     }
                 }
                 .frame(height: 4)
             }
+            if row.isDir {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(hovered ? Color.primary.opacity(0.06) : .clear,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
+        .onHover { inside in
+            if inside { hoverID = row.id } else if hoverID == row.id { hoverID = nil }
+        }
+        .onTapGesture {
+            guard row.isDir, !live else { return }
+            current = row.id
+        }
     }
 }

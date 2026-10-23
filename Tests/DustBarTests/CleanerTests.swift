@@ -38,6 +38,20 @@ import Testing
         #expect(present(path))
     }
 
+    @Test func refusesItemsAlreadyInTrash() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let old = try s.file(".Trash/old.dmg")
+        let nested = try s.file(".Trash/folder/inner.bin")
+        let items = [old, nested].map { CleanItem(path: $0, bytes: 1) }
+        let result = Cleaner.trash(items, home: s.root, extraRoots: [])
+        #expect(result.refused.map(\.path) == [old, nested])
+        #expect(result.trashed.isEmpty)
+        #expect(result.failed.isEmpty)
+        #expect(present(old))
+        #expect(present(nested))
+    }
+
     @Test func refusesDeniedPathsAndLeavesThemUntouched() throws {
         let s = try Scratch()
         defer { s.cleanup() }
@@ -133,10 +147,28 @@ import Testing
     @Test func emptyTrashReportsMissingAsFailed() throws {
         let s = try Scratch()
         defer { s.cleanup() }
+        _ = try s.dir(".Trash")
         let ghost = CleanItem(path: s.root + "/.Trash/ghost", bytes: 1)
         let result = Cleaner.emptyTrash([ghost], home: s.root)
         #expect(result.trashed.isEmpty)
         #expect(result.refused.isEmpty)
         #expect(result.failed.map(\.0) == [ghost])
+    }
+
+    @Test func emptyTrashRefusesSymlinkedTrash() throws {
+        let s = try Scratch()
+        defer { s.cleanup() }
+        let fakeHome = s.root + "/home"
+        let target = try s.file("elsewhere/x.bin")
+        _ = try s.link("home/.Trash", to: s.root + "/elsewhere")
+        // Even a home whose real target sits inside it is refused when ~/.Trash is a link.
+        let inner = try s.file("home/real/y.bin")
+        let result = Cleaner.emptyTrash([CleanItem(path: fakeHome + "/.Trash/x.bin", bytes: 1),
+                                         CleanItem(path: fakeHome + "/real/y.bin", bytes: 1)], home: fakeHome)
+        #expect(result.refused.count == 2)
+        #expect(result.trashed.isEmpty)
+        #expect(result.failed.isEmpty)
+        #expect(present(target))
+        #expect(present(inner))
     }
 }

@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+plutil -lint Resources/Info.plist
+
 swift build -c release
 
 BIN_DIR="$(swift build -c release --show-bin-path)"

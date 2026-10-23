@@ -83,6 +83,13 @@ final class Scratch {
         for p in paths { #expect(Rules.isDenied(p, home: home), "\(p) should be denied") }
     }
 
+    @Test func deniesCloudAndPrivateLibrarySubtrees() {
+        for sub in ["CloudStorage", "Safari", "Cookies", "Calendars"] {
+            #expect(Rules.isDenied(home + "/Library/" + sub, home: home), "\(sub) should be denied")
+            #expect(Rules.isDenied(home + "/Library/" + sub + "/x/y.bin", home: home), "\(sub) child should be denied")
+        }
+    }
+
     @Test func deniesExactHomeRoots() {
         let roots = [
             "Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", ".ssh", ".gnupg", ".aws",
@@ -199,20 +206,18 @@ final class Scratch {
         try s.file("Desktop/proj/node_modules/pkg/index.js")
         _ = try s.dir("Desktop/proj", modified: now.addingTimeInterval(-60 * 86_400))
         try s.file("Desktop/fresh/node_modules/pkg/index.js")
-        try s.file("Documents/big.bin", bytes: 2_000_000)
-        try s.file("Library/Other/big.bin", bytes: 2_000_000)
 
-        let cats = Rules.categories(home: h, largeThreshold: 1_000_000)
+        let cats = Rules.categories(home: h)
         let byID = Dictionary(uniqueKeysWithValues: cats.map { ($0.id, $0) })
-        for id in ["caches", "trash", "xcode", "devcaches", "node_modules", "downloads", "large"] {
+        for id in ["caches", "trash", "xcode", "devcaches", "node_modules", "downloads"] {
             #expect(byID[id] != nil, "missing category \(id)")
         }
+        #expect(byID["large"] == nil, "large files come from the tree, not discovery")
         #expect(byID["caches"]?.defaultSelected == true)
         #expect(byID["trash"]?.defaultSelected == false)
         #expect(byID["xcode"]?.defaultSelected == false)
         #expect(byID["devcaches"]?.defaultSelected == false)
         #expect(byID["node_modules"]?.defaultSelected == false)
-        #expect(byID["large"]?.defaultSelected == false)
         #expect(byID["downloads"]?.defaultSelected == false)
 
         let caches = Set(byID["caches"]?.items.map(\.path) ?? [])
@@ -223,7 +228,6 @@ final class Scratch {
         #expect(devPaths.contains(h + "/.npm/_cacache"))
         #expect(byID["node_modules"]?.items.map(\.path) == [h + "/Desktop/proj/node_modules"])
         #expect(byID["downloads"]?.items.map(\.path) == [h + "/Downloads/old.zip"])
-        #expect(byID["large"]?.items.map(\.path) == [h + "/Documents/big.bin"])
 
         #expect(cats.allSatisfy { !$0.items.isEmpty && $0.bytes > 0 })
         #expect(cats.map(\.bytes) == cats.map(\.bytes).sorted(by: >))
@@ -243,34 +247,48 @@ final class Scratch {
         // Backdate project dirs last: creating children would otherwise reset their mtime.
         for p in projects { _ = try s.dir("Developer/\(p)", modified: old) }
 
-        let cats = Rules.categories(home: s.root, largeThreshold: 1_000_000)
+        let cats = Rules.categories(home: s.root)
         let nm = cats.first { $0.id == "node_modules" }
         #expect(nm?.items.map(\.path) == [s.root + "/Developer/stale/node_modules"])
     }
 
-    @Test func largeScanGivesEachFolderItsOwnBudget() throws {
-        let s = try Scratch()
-        defer { s.cleanup() }
-        for i in 0..<10 { try s.file("Aaa/small\(i).txt", bytes: 1_024) }
-        try s.file("Zzz/big.bin", bytes: 2_000_000)
-        let large = Rules.categories(home: s.root, largeThreshold: 1_000_000, folderBudget: 4).first { $0.id == "large" }
-        #expect(large?.items.map(\.path) == [s.root + "/Zzz/big.bin"])
+    @Test func largeFilesComeFromTreeAndSkipDeniedPaths() {
+        let home = "/Users/tester"
+        let t = DiskTree(rootPath: home)
+        let docs = t.add(name: "Documents", parent: 0, isDir: true)
+        t.add(name: "big.bin", parent: docs, isDir: false, size: 2_000)
+        t.add(name: "(small files)", parent: docs, isDir: false, size: 5_000)     // fold node, never a file
+        t.add(name: "folder.bin", parent: docs, isDir: true, size: 9_000)         // directories are not files
+        let lib = t.add(name: "Library", parent: 0, isDir: true)
+        t.add(name: "huge.bin", parent: lib, isDir: false, size: 9_000)           // outside Library only
+        let ssh = t.add(name: ".ssh", parent: 0, isDir: true)
+        t.add(name: "id_key", parent: ssh, isDir: false, size: 9_000)             // denylisted subtree
+        let app = t.add(name: "Foo.app", parent: 0, isDir: true)
+        t.add(name: "bin", parent: app, isDir: false, size: 9_000)                // app bundle
+
+        let cat = Rules.largeFiles(from: t, home: home, minBytes: 1_000)
+        #expect(cat?.id == "large")
+        #expect(cat?.defaultSelected == false)
+        #expect(cat?.items.map(\.path) == [home + "/Documents/big.bin"])
+        #expect(cat?.items.map(\.bytes) == [2_000])
     }
 
-    @Test func largeScanIsBreadthFirstWithinFolder() throws {
-        let s = try Scratch()
-        defer { s.cleanup() }
-        try s.file("Deep/top.bin", bytes: 2_000_000)
-        try s.file("Deep/x/y/z/huge.bin", bytes: 2_000_000)
-        // Budget 3: Deep's two entries and x's one entry use it up before y is listed, so only the shallow file is found.
-        let large = Rules.categories(home: s.root, largeThreshold: 1_000_000, folderBudget: 3).first { $0.id == "large" }
-        #expect(large?.items.map(\.path) == [s.root + "/Deep/top.bin"])
+    @Test func largeFilesUseOneGigabyteByDefaultAndReturnNilWhenEmpty() {
+        let home = "/Users/tester"
+        let t = DiskTree(rootPath: home)
+        t.add(name: "under.bin", parent: 0, isDir: false, size: 999_999_999)
+        t.add(name: "over.bin", parent: 0, isDir: false, size: 1_500_000_000)
+        #expect(Rules.largeFiles(from: t, home: home)?.items.map(\.path) == [home + "/over.bin"])
+
+        let none = DiskTree(rootPath: home)
+        none.add(name: "small.bin", parent: 0, isDir: false, size: 10)
+        #expect(Rules.largeFiles(from: none, home: home) == nil)
     }
 
     @Test func discoverSkipsEmptyHome() async throws {
         let s = try Scratch()
         defer { s.cleanup() }
-        #expect(Rules.categories(home: s.root, largeThreshold: 1_000_000).isEmpty)
+        #expect(Rules.categories(home: s.root).isEmpty)
         #expect(await Rules.discover(home: s.root).isEmpty)
     }
 }

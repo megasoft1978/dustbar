@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Formats byte counts with the system file-size style.
@@ -25,14 +26,24 @@ public struct PopoverView: View {
     let model: AppModel
     @State private var tab: Tab = .explore
     @State private var current: NodeID = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static let height: CGFloat = 680
 
     private enum Tab: Hashable { case explore, clean }
 
     public init(model: AppModel) { self.model = model }
 
+    /// Test hook: starts on the Clean tab when `showClean` is true.
+    init(model: AppModel, showClean: Bool) {
+        self.model = model
+        self._tab = State(initialValue: showClean ? .clean : .explore)
+    }
+
     public var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             header
+            if model.progress.unreadableDirs > 0 { fullDiskAccessBanner }
             Picker("Section", selection: $tab) {
                 Text("Explore").tag(Tab.explore)
                 Text("Clean").tag(Tab.clean)
@@ -47,20 +58,22 @@ public struct PopoverView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .padding(16)
-        .frame(width: 420, height: 560)
+        .padding(14)
+        .frame(width: 420, height: PopoverView.height)
         .background(.ultraThinMaterial)
+        // A new tree (rescan) has different node ids; drop the drill-down position from the old one.
+        .onChange(of: model.tree.map(ObjectIdentifier.init)) { current = 0 }
     }
 
     // MARK: Header
 
     private var header: some View {
         let s = model.stats
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(ByteText.string(s.free)) free")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                     Text("of \(ByteText.string(s.total))")
@@ -81,15 +94,32 @@ public struct PopoverView: View {
             }
             UsageBar(stats: s)
             legend(s)
-            if model.scanning { scanning }
-            if model.progress.unreadableDirs > 0 {
-                Label("Grant Full Disk Access for complete results", systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
+            if model.scanning { scanning.transition(.opacity) }
         }
-        .padding(16)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.scanning)
+        .padding(12)
         .dustCard()
+    }
+
+    private var fullDiskAccessBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.orange)
+            Text("Some folders skipped. Grant Full Disk Access.")
+                .font(.caption)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button("Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func legend(_ s: VolumeStats) -> some View {
@@ -107,10 +137,24 @@ public struct PopoverView: View {
         VStack(alignment: .leading, spacing: 4) {
             ProgressView()
                 .progressViewStyle(.linear)
-            Text("Scanning \(model.progress.files.formatted()) files · \(ByteText.string(model.progress.bytes))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+            scanLabel
+        }
+    }
+
+    @ViewBuilder
+    private var scanLabel: some View {
+        let text = Text("Scanning… \(model.progress.files.formatted()) files · \(ByteText.string(model.progress.bytes))")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        if reduceMotion {
+            text
+        } else {
+            text.phaseAnimator([1.0, 0.45]) { view, phase in
+                view.opacity(phase)
+            } animation: { _ in
+                .easeInOut(duration: 0.9)
+            }
         }
     }
 
@@ -120,19 +164,19 @@ public struct PopoverView: View {
     private var explore: some View {
         if let tree = model.tree, tree.count > 0 {
             let rev = tree.size[0]
-            ScrollView {
-                VStack(spacing: 12) {
-                    SunburstView(tree: tree, current: $current, revision: rev)
-                        .frame(height: 300)
-                        .padding(12)
-                        .dustCard()
-                    TopList(tree: tree, current: current, revision: rev,
-                            onClean: { model.onClean?($0) })
-                        .padding(12)
-                        .dustCard()
-                }
+            VStack(spacing: 10) {
+                SunburstView(tree: tree, current: $current, revision: rev, live: model.isLiveSnapshot)
+                    .frame(height: 244)
+                    .padding(10)
+                    .dustCard()
+                // Only the list scrolls, inside the space left under the chart.
+                TopList(tree: tree, current: $current, revision: rev, live: model.isLiveSnapshot,
+                        onClean: { model.onClean?($0) }, busy: model.cleaning)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .dustCard()
             }
-            .scrollIndicators(.hidden)
         } else {
             ContentUnavailableView(
                 "Not scanned yet",

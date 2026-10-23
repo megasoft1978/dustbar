@@ -94,7 +94,6 @@ public struct CleanView: View {
     @State private var expanded: Set<String> = []
     @State private var confirming = false
     @State private var confirmingEmpty = false
-    @State private var lastWasPermanent = false
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     public init(model: AppModel) { self.model = model }
@@ -125,7 +124,6 @@ public struct CleanView: View {
             titleVisibility: .visible
         ) {
             Button("Move to Trash", role: .destructive) {
-                lastWasPermanent = false
                 model.onClean?(plan.rest)
             }
             Button("Cancel", role: .cancel) {}
@@ -138,7 +136,6 @@ public struct CleanView: View {
             titleVisibility: .visible
         ) {
             Button("Delete Permanently", role: .destructive) {
-                lastWasPermanent = true
                 model.onEmptyTrash?(plan.trash)
             }
             Button("Cancel", role: .cancel) {}
@@ -163,7 +160,7 @@ public struct CleanView: View {
         return HStack(spacing: 10) {
             Image(systemName: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(ok ? Color.green : Color.orange)
-            Text(CleanSelection.summary(result, permanent: lastWasPermanent))
+            Text(CleanSelection.summary(result, permanent: result.permanent))
                 .font(.callout.weight(.medium))
                 .lineLimit(2)
             Spacer(minLength: 0)
@@ -190,7 +187,12 @@ public struct CleanView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                Text(CleanSelection.format(category.bytes))
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(CleanSelection.format(category.bytes))
+                        .monospacedDigit()
+                    Text("\(category.items.count) items")
+                        .font(.caption)
+                }
                     .font(.callout)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -225,7 +227,7 @@ public struct CleanView: View {
 
     private func itemRow(_ item: CleanItem) -> some View {
         HStack(spacing: 8) {
-            checkbox(model.selectedItems.contains(item.path) ? .all : .none, label: item.path) {
+            checkbox(model.selectedItems.contains(item.path) ? .all : .none, label: item.path, font: .body) {
                 CleanSelection.toggle(item, selected: &model.selectedItems)
             }
             Text(CleanSelection.abbreviate(item.path, home: home))
@@ -260,7 +262,7 @@ public struct CleanView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .controlSize(.large)
-                .disabled(model.scanning)
+                .disabled(model.scanning || model.cleaning)
             }
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -282,7 +284,7 @@ public struct CleanView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(plan.rest.isEmpty || model.scanning)
+                .disabled(plan.rest.isEmpty || model.scanning || model.cleaning)
             }
         }
         .padding(12)
@@ -292,7 +294,8 @@ public struct CleanView: View {
 
     // MARK: Helpers
 
-    private func checkbox(_ state: CleanSelection.TriState, label: String, action: @escaping () -> Void) -> some View {
+    private func checkbox(_ state: CleanSelection.TriState, label: String, font: Font = .title3,
+                          action: @escaping () -> Void) -> some View {
         let symbol: String
         switch state {
         case .none: symbol = "square"
@@ -301,7 +304,7 @@ public struct CleanView: View {
         }
         return Button(action: action) {
             Image(systemName: symbol)
-                .font(.title3)
+                .font(font)
                 .foregroundStyle(state == .none ? Color.secondary : Color.accentColor)
                 .contentTransition(.symbolEffect(.replace))
         }

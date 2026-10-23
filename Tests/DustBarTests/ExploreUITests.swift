@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import DustBar
 
@@ -129,4 +131,192 @@ final class ExploreUITests: XCTestCase {
         XCTAssertEqual(rows.first { $0.name == "B" }?.canAct, false)
         XCTAssertEqual(rows.first { $0.name == "A" }?.canAct, true)
     }
+
+    /// Same logical children as `makeTree` but inserted in another order, so node ids differ by path.
+    private func grownTree(extra: Bool) -> DiskTree {
+        let t = DiskTree(rootPath: "/x")
+        _ = t.add(name: "C", parent: 0, isDir: false, size: 1500)
+        _ = t.add(name: "B", parent: 0, isDir: false, size: 6000)
+        if extra { _ = t.add(name: "D", parent: 0, isDir: false, size: 2500) }
+        t.rollUp()
+        return t
+    }
+
+    func testTweenEndpointsAndPathMatching() {
+        let (t1, _, _, _, _, _, _) = makeTree()
+        let t2 = grownTree(extra: false)
+        let prev = SunburstLayout.arcs(tree: t1, root: 0)
+        let next = SunburstLayout.arcs(tree: t2, root: 0)
+        XCTAssertEqual(SunburstTween.interpolate(prev: prev, next: next, t: 1), next)
+        let bPrev = prev.first { $0.path == "/x/B" }!
+        let bNext = next.first { $0.path == "/x/B" }!
+        XCTAssertNotEqual(bPrev.id, bNext.id)          // ids differ between snapshots
+        XCTAssertNotEqual(bPrev.start, bNext.start)    // geometry really changes
+        let bAt0 = SunburstTween.interpolate(prev: prev, next: next, t: 0).first { $0.path == "/x/B" }!
+        XCTAssertEqual(bAt0.start, bPrev.start, accuracy: 1e-9)
+        XCTAssertEqual(bAt0.end, bPrev.end, accuracy: 1e-9)
+    }
+
+    func testNewArcGrowsFromZeroWidth() {
+        let (t1, _, _, _, _, _, _) = makeTree()
+        let t2 = grownTree(extra: true)
+        let prev = SunburstLayout.arcs(tree: t1, root: 0)
+        let next = SunburstLayout.arcs(tree: t2, root: 0)
+        let d = next.first { $0.path == "/x/D" }!
+        let at0 = SunburstTween.interpolate(prev: prev, next: next, t: 0).first { $0.path == "/x/D" }!
+        XCTAssertEqual(at0.start, at0.end, accuracy: 1e-9)
+        let at1 = SunburstTween.interpolate(prev: prev, next: next, t: 1).first { $0.path == "/x/D" }!
+        XCTAssertEqual(at1.start, d.start, accuracy: 1e-9)
+        XCTAssertEqual(at1.end, d.end, accuracy: 1e-9)
+    }
+
+    func testVanishedArcsDroppedAndIntermediateStaysBetween() {
+        let (t1, _, _, _, _, _, _) = makeTree()
+        let t2 = grownTree(extra: true)
+        let withD = SunburstLayout.arcs(tree: t2, root: 0)
+        let plain = SunburstLayout.arcs(tree: t1, root: 0)
+        let out = SunburstTween.interpolate(prev: withD, next: plain, t: 0.5)
+        XCTAssertEqual(out.map(\.path).sorted(), plain.map(\.path).sorted())
+        let a = withD.first { $0.path == "/x/B" }!
+        let b = plain.first { $0.path == "/x/B" }!
+        let mid = out.first { $0.path == "/x/B" }!
+        XCTAssertEqual(mid.start, (a.start + b.start) / 2, accuracy: 1e-9)
+    }
+
+    func testEaseIsClampedAndMonotonic() {
+        XCTAssertEqual(SunburstTween.ease(-1), 0)
+        XCTAssertEqual(SunburstTween.ease(2), 1)
+        XCTAssertEqual(SunburstTween.ease(0.5), 0.5, accuracy: 1e-12)
+        var last = -1.0
+        for i in 0...100 {
+            let v = SunburstTween.ease(Double(i) / 100)
+            XCTAssertGreaterThanOrEqual(v, last)
+            last = v
+        }
+    }
+
+    func testRetargetStartsFromGeometryOnScreen() {
+        let (t1, _, _, _, _, _, _) = makeTree()
+        let t2 = grownTree(extra: false)
+        let t3 = grownTree(extra: true)
+        let from = SunburstLayout.arcs(tree: t1, root: 0)
+        let target = SunburstLayout.arcs(tree: t2, root: 0)
+        let next = SunburstLayout.arcs(tree: t3, root: 0)
+        let onScreen = SunburstTween.interpolate(prev: from, next: target, t: 0.5)
+        let retargeted = SunburstTween.interpolate(prev: onScreen, next: next, t: 0)
+        for arc in onScreen {
+            let r = retargeted.first { $0.path == arc.path }!
+            XCTAssertEqual(r.start, arc.start, accuracy: 1e-9)
+            XCTAssertEqual(r.end, arc.end, accuracy: 1e-9)
+        }
+    }
+
+    /// A rescan can leave a drill-down id larger than the new tree's count; rendering must clamp, not trap.
+    @MainActor
+    func testOutOfRangeCurrentRendersRootWithoutTrapping() {
+        let small = DiskTree(rootPath: "/small")
+        _ = small.add(name: "only", parent: 0, isDir: false, size: 100)
+        small.rollUp()
+        var current: NodeID = 999
+        let binding = Binding<NodeID>(get: { current }, set: { current = $0 })
+        _ = NSApplication.shared
+        let view = SunburstView(tree: small, current: binding, revision: small.size[0])
+            .frame(width: 300, height: 300)
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        host.layoutSubtreeIfNeeded()
+        window.orderOut(nil)
+        XCTAssertEqual(current, 0)
+    }
+}
+
+/// Renders the popover to PNG files for visual review. Runs only when DUSTBAR_SNAPSHOT_DIR is set.
+@MainActor
+final class PopoverSnapshotTests: XCTestCase {
+    private func sampleModel() -> AppModel {
+        let model = AppModel()
+        model.stats = VolumeStats(total: 2_000_000_000_000, free: 205_000_000_000, purgeable: 7_800_000_000)
+        model.progress = ScanProgress(files: 1_600_000, bytes: 420_000_000_000, unreadableDirs: 12, done: true)
+        let t = DiskTree(rootPath: "/Users/demo")
+        let library = t.add(name: "Library", parent: 0, isDir: true)
+        let developer = t.add(name: "Developer", parent: library, isDir: true)
+        _ = t.add(name: "Runtime.dmg", parent: developer, isDir: false, size: 120_000_000_000)
+        _ = t.add(name: "Devices", parent: developer, isDir: false, size: 60_000_000_000)
+        _ = t.add(name: "Xcode DerivedData", parent: developer, isDir: false, size: 80_000_000_000)
+        let caches = t.add(name: "Caches", parent: library, isDir: true)
+        _ = t.add(name: "com.apple.Safari", parent: caches, isDir: false, size: 50_000_000_000)
+        _ = t.add(name: "Homebrew", parent: caches, isDir: false, size: 70_000_000_000)
+        let movies = t.add(name: "Movies", parent: 0, isDir: true)
+        _ = t.add(name: "Holiday 2024 Family Archive.mov", parent: movies, isDir: false, size: 100_000_000_000)
+        _ = t.add(name: "Project Final Cut.mp4", parent: movies, isDir: false, size: 50_000_000_000)
+        _ = t.add(name: "Pictures", parent: 0, isDir: false, size: 90_000_000_000)
+        let downloads = t.add(name: "Downloads", parent: 0, isDir: true)
+        _ = t.add(name: "installer-macos-26.dmg", parent: downloads, isDir: false, size: 14_000_000_000)
+        _ = t.add(name: "archive.zip", parent: downloads, isDir: false, size: 40_000_000_000)
+        _ = t.add(name: "Desktop Sketches", parent: 0, isDir: false, size: 25_000_000_000)
+        _ = t.add(name: "tiny", parent: 0, isDir: false, size: 10)
+        t.rollUp()
+        model.tree = t
+
+        let cacheItems = [
+            CleanItem(path: "/Users/demo/Library/Caches/Homebrew", bytes: 70_000_000_000),
+            CleanItem(path: "/Users/demo/Library/Caches/com.apple.Safari", bytes: 50_000_000_000),
+        ]
+        model.categories = [
+            CleanCategory(id: "caches", title: "Caches", detail: "Regenerated automatically by apps.",
+                          defaultSelected: true, items: cacheItems),
+            CleanCategory(id: "xcode", title: "Xcode DerivedData", detail: "Build products. Safe to delete.",
+                          defaultSelected: false,
+                          items: [CleanItem(path: "/Users/demo/Library/Developer/Xcode/DerivedData", bytes: 80_000_000_000)]),
+            CleanCategory(id: "trash", title: "Trash", detail: "Permanently removes items already in the Trash.",
+                          defaultSelected: true,
+                          items: [CleanItem(path: "/Users/demo/.Trash/old.zip", bytes: 3_000_000_000)]),
+        ]
+        model.selectedItems = Set(cacheItems.map(\.path))
+        return model
+    }
+
+    func testRenderPopoverSnapshots() throws {
+        guard let dir = ProcessInfo.processInfo.environment["DUSTBAR_SNAPSHOT_DIR"] else { return }
+        let model = sampleModel()
+        _ = NSApplication.shared   // AppKit views need an application instance
+        // Hosted in an off-screen window so the popover renders through the real AppKit path.
+        for dark in [false, true] {
+            let name = dark ? "dark" : "light"
+            for (tabName, showClean) in [("explore", false), ("clean", true)] {
+                let view = PopoverView(model: model, showClean: showClean)
+                    .background(dark ? Color(white: 0.11) : Color(white: 0.90))
+                let host = NSHostingView(rootView: view)
+                host.frame = NSRect(x: 0, y: 0, width: 420, height: 560)
+                let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+                                      backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                window.contentView = host
+                window.makeKeyAndOrderFront(nil)
+                RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+                host.layoutSubtreeIfNeeded()
+                guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+                    XCTFail("no bitmap: \(tabName)-\(name)")
+                    window.orderOut(nil)
+                    continue
+                }
+                host.cacheDisplay(in: host.bounds, to: rep)
+                window.orderOut(nil)
+                guard let png = rep.representation(using: .png, properties: [:]) else {
+                    XCTFail("png failed: \(tabName)-\(name)")
+                    continue
+                }
+                try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("render-\(tabName)-\(name).png"))
+            }
+        }
+    }
+
 }

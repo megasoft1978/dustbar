@@ -32,9 +32,10 @@ private func ringImage(used: Double, tint: StatusTint) -> NSImage {
 }
 
 @MainActor
-final class StatusController: NSObject, NSPopoverDelegate {
+final class StatusController: NSObject, NSPopoverDelegate, NSMenuDelegate {
     private static let staleAfter = Duration.seconds(300)
     private static let maxDirtyPaths = 50_000
+    private static let snapshotGap = Duration.milliseconds(900)   // min main-actor gap between live snapshots (~1 s)
 
     private let model = AppModel()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -45,11 +46,18 @@ final class StatusController: NSObject, NSPopoverDelegate {
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = 0                  // bumped on every start/cancel; stale scans publish nothing
     private var lastScanFinished: ContinuousClock.Instant?
+    private var lastSnapshotAt: ContinuousClock.Instant?
+    private var preLiveTree: DiskTree?              // last complete tree, restored if a live scan is discarded
     private var knownItemPaths = Set<String>()      // every item path seen by any completed scan
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let lowDisk = LowDiskAlert()
+    private let menu = NSMenu()
+    private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+    private let alertSubmenu = NSMenu()
 
     override init() {
         super.init()
+        buildMenu()
         guard let button = statusItem.button else { return }
         button.target = self
         button.action = #selector(statusItemClicked(_:))
@@ -58,8 +66,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
 
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentSize = NSSize(width: 420, height: 560)
-        popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
+        popover.contentSize = NSSize(width: 420, height: PopoverView.height)
 
         model.onRescan = { [weak self] in self?.rescan(force: true) }
         model.onClean = { [weak self] items in self?.clean(items) }
@@ -82,6 +89,18 @@ final class StatusController: NSObject, NSPopoverDelegate {
         )
         monitor.start()
         self.monitor = monitor
+        loadCachedTree()
+    }
+
+    /// Shows the last saved tree right away (flagged via `model.cachedAt`) while the first fresh scan has not published yet.
+    private func loadCachedTree() {
+        let root = home
+        Task { [weak self] in
+            let cached = await Task.detached(priority: .utility) { TreeCache.load(root: root) }.value
+            guard let self, let cached, self.model.tree == nil else { return }
+            self.model.tree = cached.tree
+            self.model.cachedAt = cached.scannedAt
+        }
     }
 
     /// Called on quit: cancel any scan and stop watching.
@@ -90,8 +109,13 @@ final class StatusController: NSObject, NSPopoverDelegate {
         monitor?.stop()
     }
 
+    // A running scan keeps going after the popover closes so the next open shows a finished result.
+    // The SwiftUI view is dropped on close: a hidden hosting view keeps its render buffers (hundreds of MB while scanning).
     func popoverDidClose(_ notification: Notification) {
-        cancelScan()
+        guard !popover.isShown else { return }   // reopened before this close notification ran
+        discardLiveSnapshot()   // restores the last complete tree and releases the partial snapshot
+        popover.contentViewController = nil
+        malloc_zone_pressure_relief(nil, 0)
     }
 
     private func observeStats() {
@@ -119,11 +143,17 @@ final class StatusController: NSObject, NSPopoverDelegate {
             string: " " + Self.freeText(stats.free),
             attributes: [.foregroundColor: color, .font: NSFont.menuBarFont(ofSize: 0)]
         )
+        button.toolTip = "\(Self.byteText(stats.used)) / \(Self.byteText(stats.total))"
+        lowDisk.evaluate(freeFraction: free, free: stats.free)
     }
 
     private static func freeText(_ bytes: UInt64) -> String {
         let gb = Double(bytes) / 1_000_000_000
         return gb < 10 ? String(format: "%.1f GB", gb) : String(format: "%.0f GB", gb)
+    }
+
+    private static func byteText(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .decimal)
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -137,30 +167,71 @@ final class StatusController: NSObject, NSPopoverDelegate {
             return
         }
         NSApp.activate()
+        popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         scanIfStale()
     }
 
-    private func showMenu() {
-        let menu = NSMenu()
+    /// Built once; state is refreshed in `menuWillOpen` so it is current every time the menu opens.
+    private func buildMenu() {
         menu.autoenablesItems = false
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        login.target = self
-        switch SMAppService.mainApp.status {
-        case .enabled: login.state = .on
-        case .requiresApproval: login.state = .mixed
-        default: login.state = .off
+        menu.delegate = self
+        loginItem.target = self
+        menu.addItem(loginItem)
+        menu.addItem(.separator())
+
+        let alertItem = NSMenuItem(title: "Alert below", action: nil, keyEquivalent: "")
+        for (index, threshold) in AlertThreshold.allCases.enumerated() {
+            let item = NSMenuItem(title: threshold.title, action: #selector(setAlertThreshold(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            alertSubmenu.addItem(item)
         }
-        // Only a real .app bundle can be registered as a login item.
-        if !Bundle.main.bundlePath.hasSuffix(".app") {
-            login.isEnabled = false
-            login.toolTip = "Launch at Login needs DustBar.app (run scripts/bundle.sh)"
-        }
-        menu.addItem(login)
+        alertItem.submenu = alertSubmenu
+        menu.addItem(alertItem)
+
+        let rescanItem = NSMenuItem(title: "Rescan now", action: #selector(rescanNow), keyEquivalent: "r")
+        rescanItem.target = self
+        menu.addItem(rescanItem)
+        let aboutItem = NSMenuItem(title: "About DustBar", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit DustBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        switch SMAppService.mainApp.status {
+        case .enabled: loginItem.state = .on
+        case .requiresApproval: loginItem.state = .mixed
+        default: loginItem.state = .off
+        }
+        // Only a real .app bundle can be registered as a login item.
+        let isBundle = Bundle.main.bundlePath.hasSuffix(".app")
+        loginItem.isEnabled = isBundle
+        loginItem.toolTip = isBundle ? nil : "Launch at Login needs DustBar.app (run scripts/bundle.sh)"
+        for item in alertSubmenu.items {
+            item.state = AlertThreshold.allCases[item.tag] == lowDisk.threshold ? .on : .off
+        }
+    }
+
+    private func showMenu() {
         guard let button = statusItem.button else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    @objc private func setAlertThreshold(_ sender: NSMenuItem) {
+        lowDisk.setThreshold(AlertThreshold.allCases[sender.tag])
+        refreshStatusItem()   // re-evaluates immediately against current free space
+    }
+
+    @objc private func rescanNow() {
+        rescan(force: true)
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate()
+        NSApp.orderFrontStandardAboutPanel(nil)   // shows name and version from Info.plist
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -196,7 +267,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
 
     /// Popover opened: scan if there is no tree yet, or if dirty paths exist and the last scan is over 5 min old.
     private func scanIfStale() {
-        guard model.tree != nil else { rescan(); return }
+        guard model.tree != nil, model.cachedAt == nil else { rescan(); return }   // cached tree: always refresh
         let dirty = !dirtyPaths.isEmpty || needsFullRescan
         let stale = lastScanFinished.map { ContinuousClock.now - $0 > Self.staleAfter } ?? true
         if dirty && stale { rescan() }
@@ -217,20 +288,41 @@ final class StatusController: NSObject, NSPopoverDelegate {
         scanTask?.cancel()
         scanGeneration += 1
         let generation = scanGeneration
+        discardLiveSnapshot()
         model.scanning = true
         model.progress = ScanProgress()
         dirtyPaths.removeAll()
         needsFullRescan = false
+        lastSnapshotAt = nil
         let root = home
         let model = self.model
         scanTask = Task { [weak self] in
-            guard let tree = await Scanner.scanCancellable(root: root, progress: { progress in
+            guard let tree = await Scanner.scanLive(root: root, snapshotInterval: 1.0, onSnapshot: { snapshot in
+                Task { @MainActor in self?.publishSnapshot(snapshot, generation: generation) }
+            }, progress: { progress in
                 Task { @MainActor in
                     if self?.scanGeneration == generation { model.progress = progress }
                 }
             }) else { return }
-            let categories = await Rules.discover(home: root)
+
+            // Final tree: publish it, then derive categories from it. Each await re-checks the generation.
             guard !Task.isCancelled, let self, generation == self.scanGeneration else { return }
+            self.preLiveTree = nil
+            model.tree = tree
+            model.cachedAt = nil
+            model.isLiveSnapshot = false
+            model.scanning = false
+            self.lastScanFinished = ContinuousClock.now
+            Task.detached(priority: .utility) {
+                if let dev = TreeCache.deviceID(of: root) { TreeCache.save(tree, device: dev) }
+            }
+
+            let discovered = await Rules.discover(home: root)
+            let basePaths = Set(discovered.flatMap(\.items).map(\.path))
+            let dupResult = await Duplicates.find(tree: tree, excluding: basePaths)   // defaultSelected == false
+            let large = Rules.largeFiles(from: tree, home: root)
+            guard !Task.isCancelled, generation == self.scanGeneration else { return }
+            let categories = Self.dedupe(base: discovered, duplicates: dupResult.category.map { [$0] } ?? [], kept: dupResult.kept, large: large)
 
             // Keep the user's choices for paths that still exist; default-select only paths never seen before.
             let newPaths = Set(categories.flatMap(\.items).map(\.path))
@@ -238,13 +330,59 @@ final class StatusController: NSObject, NSPopoverDelegate {
             model.selectedItems = model.selectedItems.intersection(newPaths)
                 .union(defaults.subtracting(self.knownItemPaths))
             self.knownItemPaths = newPaths
-            model.tree = tree
             model.categories = categories
             model.progress.done = true
-            model.scanning = false
-            self.lastScanFinished = ContinuousClock.now
             self.scanTask = nil
+            malloc_zone_pressure_relief(nil, 0)   // hand the walk's and hashing's freed pages back
         }
+    }
+
+    /// Publishes a partial tree from a running scan. Throttled on the main actor; ignored once the scan is stale.
+    private func publishSnapshot(_ snapshot: DiskTree, generation: Int) {
+        guard popover.isShown, scanGeneration == generation, model.scanning, model.cachedAt == nil else { return }   // keep showing the full cached tree
+        let now = ContinuousClock.now
+        if let last = lastSnapshotAt, now - last < Self.snapshotGap { return }
+        lastSnapshotAt = now
+        if !model.isLiveSnapshot { preLiveTree = model.tree }
+        model.tree = snapshot
+        model.isLiveSnapshot = true
+    }
+
+    /// Replaces a partial live tree with the last complete tree (nil if there was none).
+    private func discardLiveSnapshot() {
+        guard model.isLiveSnapshot else { return }
+        model.tree = preLiveTree
+        model.isLiveSnapshot = false
+        preLiveTree = nil
+    }
+
+    /// One place per path: duplicate and large items equal to or under any base item are dropped, `kept`
+    /// copies leave the large category, and large files also drop items under duplicates. Empty categories are dropped.
+    nonisolated static func dedupe(base: [CleanCategory], duplicates: [CleanCategory], kept: Set<String> = [],
+                                   large: CleanCategory?) -> [CleanCategory] {
+        let basePaths = Set(base.flatMap(\.items).map(\.path))
+        func covered(_ path: String, _ set: Set<String>) -> Bool { set.contains(path) || hasAncestor(path, in: set) }
+        let dupes = duplicates.map { category -> CleanCategory in
+            var c = category
+            c.items = category.items.filter { !covered($0.path, basePaths) }
+            return c
+        }
+        let claimed = basePaths.union(dupes.flatMap(\.items).map(\.path))
+        var result = base + dupes
+        if var big = large {
+            big.items = big.items.filter { !covered($0.path, claimed) && !kept.contains($0.path) }
+            result.append(big)
+        }
+        return result.filter { !$0.items.isEmpty }
+    }
+
+    private nonisolated static func hasAncestor(_ path: String, in paths: Set<String>) -> Bool {
+        var current = Substring(path)
+        while let slash = current.lastIndex(of: "/"), slash != current.startIndex {
+            current = current[..<slash]
+            if paths.contains(String(current)) { return true }
+        }
+        return false
     }
 
     /// Cancels any running scan. Its result is discarded (never published).
@@ -253,26 +391,32 @@ final class StatusController: NSObject, NSPopoverDelegate {
         scanTask?.cancel()
         scanTask = nil
         scanGeneration += 1
+        discardLiveSnapshot()
         model.scanning = false
     }
 
     private func clean(_ items: [CleanItem]) {
-        runCleanup { Cleaner.trash(items) }
+        runCleanup(permanent: false) { Cleaner.trash(items) }
     }
 
     private func emptyTrash(_ items: [CleanItem]) {
         let home = self.home
-        runCleanup { Cleaner.emptyTrash(items, home: home) }
+        runCleanup(permanent: true) { Cleaner.emptyTrash(items, home: home) }
     }
 
     /// Runs a cleaner off-main, publishes its result, then rescans (restarting any scan in flight so the view is fresh).
-    private func runCleanup(_ work: @escaping @Sendable () -> CleanResult) {
+    private func runCleanup(permanent: Bool, _ work: @escaping @Sendable () -> CleanResult) {
+        guard !model.cleaning else { return }   // ignore a second submit while one runs
+        model.cleaning = true
         let model = self.model
         Task {
-            let result = await Task.detached { work() }.value
+            var result = await Task.detached { work() }.value
+            result.permanent = permanent
+            model.cleaning = false
             model.lastResult = result
             model.selectedItems = []
             self.rescan(force: true)
         }
     }
 }
+

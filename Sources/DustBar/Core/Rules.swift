@@ -8,7 +8,7 @@ public enum Rules {
     private static let rootDeniedSubtrees = [
         "Library/Keychains", "Library/Mail", "Library/Mobile Documents", "Library/Messages",
         "Library/Application Support", "Library/Containers", "Library/Group Containers",
-        "Library/Preferences", "Music", ".ssh", ".gnupg", ".aws",
+        "Library/Preferences", "Library/CloudStorage", "Library/Safari", "Library/Cookies", "Library/Calendars", "Music", ".ssh", ".gnupg", ".aws",
     ]
     /// Denied only when the path is exactly this root-relative location ("" is the root). Children stay allowed.
     private static let rootDeniedExact = [
@@ -17,14 +17,18 @@ public enum Rules {
         "Library/Caches", "Library/Developer", "Library/Logs",
     ]
 
-    /// True unless `path` resolves strictly inside `home` or one of `roots` and is clear of the denylist.
-    /// Both the lexical and the symlink-resolved (physical) forms are checked. Production passes no `roots`.
-    public static func isDenied(_ path: String, home: String = NSHomeDirectory(), roots: [String] = []) -> Bool {
-        denied(path, home: home, roots: roots, exact: true)
+    /// True unless `path` resolves strictly inside `home` and is clear of the denylist.
+    /// Both the lexical and the symlink-resolved (physical) forms are checked.
+    public static func isDenied(_ path: String, home: String = NSHomeDirectory()) -> Bool {
+        denied(path, home: home, roots: [])
     }
 
-    /// `exact: false` is the traversal check: a root-level folder such as ~/Documents is itself denied but must stay walkable.
-    private static func denied(_ path: String, home: String, roots: [String], exact: Bool) -> Bool {
+    /// Test hook: `roots` widens the allowed area beyond `home`. Production never passes any.
+    static func isDenied(_ path: String, home: String, roots: [String]) -> Bool {
+        denied(path, home: home, roots: roots)
+    }
+
+    private static func denied(_ path: String, home: String, roots: [String]) -> Bool {
         guard path.hasPrefix("/") else { return true }
         let lex = key(lexical(path))
         let phys = key(physical(path))
@@ -45,7 +49,6 @@ public enum Rules {
             for sub in rootDeniedSubtrees.map(key) where within(lex, r.lex + "/" + sub) || within(phys, r.phys + "/" + sub) {
                 return true
             }
-            guard exact else { continue }
             for sub in rootDeniedExact.map(key) {
                 let l = sub.isEmpty ? r.lex : r.lex + "/" + sub
                 let p = sub.isEmpty ? r.phys : r.phys + "/" + sub
@@ -58,11 +61,31 @@ public enum Rules {
     /// Scans home for cleanable categories. Read-only. Empty categories are dropped; sorted by bytes desc.
     public static func discover(home: String) async -> [CleanCategory] {
         await Task.detached(priority: .utility) {
-            Rules.categories(home: home, largeThreshold: 1_000_000_000)
+            autoreleasepool { Rules.categories(home: home) }
         }.value
     }
 
-    static func categories(home rawHome: String, largeThreshold: UInt64, folderBudget: Int = 100_000) -> [CleanCategory] {
+    /// Large files, taken from the already-scanned tree (no second walk). Id "large", not selected by default.
+    /// Skips the "(small files)" fold, anything under ~/Library and any denylisted path. Nil when nothing qualifies.
+    public static func largeFiles(from tree: DiskTree, home rawHome: String, minBytes: UInt64 = 1_000_000_000) -> CleanCategory? {
+        let home = lexical(rawHome)
+        let libraryKey = key(home + "/Library")
+        var items: [CleanItem] = []
+        for i in 1..<tree.count where !tree.isDir[i] && tree.size[i] >= minBytes {
+            let id = NodeID(i)
+            guard tree.name(id) != smallFilesName else { continue }
+            let p = tree.path(of: id)
+            guard !within(key(lexical(p)), libraryKey), !isDenied(p, home: home) else { continue }
+            items.append(CleanItem(path: p, bytes: tree.size[i]))
+        }
+        guard !items.isEmpty else { return nil }
+        return CleanCategory(id: "large", title: "Large files", detail: "Files over 1 GB outside Library.",
+                             defaultSelected: false, items: items.sorted { $0.bytes > $1.bytes })
+    }
+
+    private static let smallFilesName = "(small files)"
+
+    static func categories(home rawHome: String) -> [CleanCategory] {
         let home = lexical(rawHome)
         let now = Date()
         var cats: [CleanCategory] = []
@@ -102,12 +125,6 @@ public enum Rules {
         }
         add("downloads", "Old Downloads", "Downloads not used or changed in 90+ days.", false, downloads)
 
-        let claimed = cats.flatMap { $0.items.map(\.path) }
-        var large: [CleanItem] = []
-        findLargeFiles(home: home, threshold: largeThreshold, folderBudget: folderBudget, out: &large)
-        large = large.filter { item in !claimed.contains { within(key(item.path), key($0)) } }
-        add("large", "Large files", "Files over 1 GB outside Library.", false, large)
-
         return cats.sorted { $0.bytes > $1.bytes }
     }
 
@@ -131,39 +148,6 @@ public enum Rules {
         }
     }
 
-    /// Large-file scan, one top-level folder at a time, breadth-first, each with its own entry budget.
-    /// A big folder cannot starve the others, and shallow files are seen before a budget runs out.
-    private static func findLargeFiles(home: String, threshold: UInt64, folderBudget: Int, out: inout [CleanItem]) {
-        for name in (try? FileManager.default.contentsOfDirectory(atPath: home)) ?? [] where name != "Library" && name != ".Trash" {
-            let top = home + "/" + name
-            guard let e = entry(top), !e.isLink else { continue }
-            if !e.isDir {
-                if e.size >= threshold { out.append(CleanItem(path: top, bytes: e.size)) }
-                continue
-            }
-            guard !denied(top, home: home, roots: [], exact: false) else { continue }
-            var queue: [(dir: String, depth: Int)] = [(top, 0)]
-            var head = 0
-            var budget = folderBudget
-            while head < queue.count && budget > 0 {
-                let (dir, depth) = queue[head]
-                head += 1
-                guard depth <= 12, let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
-                for child in names {
-                    budget -= 1
-                    if budget <= 0 { break }
-                    let p = dir + "/" + child
-                    guard let ce = entry(p), !ce.isLink else { continue }
-                    if ce.isDir {
-                        if !denied(p, home: home, roots: [], exact: false) { queue.append((p, depth + 1)) }
-                    } else if ce.size >= threshold {
-                        out.append(CleanItem(path: p, bytes: ce.size))
-                    }
-                }
-            }
-        }
-    }
-
     private static func topLevel(_ dir: String, skip: Set<String> = []) -> [CleanItem] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
         return names.compactMap { name in
@@ -174,20 +158,36 @@ public enum Rules {
     }
 
     /// Allocated bytes of a file or tree. Symlinks are never followed and count as 0.
+    /// Plain POSIX walk: no URL/NSString objects, so nothing piles up in autorelease pools or the malloc zones.
     private static func allocatedSize(_ path: String) -> UInt64 {
-        guard let e = entry(path), !e.isLink else { return 0 }
-        if !e.isDir { return e.size }
-        guard let en = FileManager.default.enumerator(at: URL(fileURLWithPath: path), includingPropertiesForKeys: Array(entryKeys),
-                                                      options: [], errorHandler: { _, _ in true }) else { return 0 }
+        var st = stat()
+        guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) != S_IFLNK else { return 0 }
+        if (st.st_mode & S_IFMT) != S_IFDIR { return blocks(st) }
+        return dirSize(path, depth: 0)
+    }
+
+    private static func blocks(_ st: stat) -> UInt64 { UInt64(max(0, st.st_blocks)) &* 512 }
+
+    private static func dirSize(_ path: String, depth: Int) -> UInt64 {
+        guard depth < 64, let dir = opendir(path) else { return 0 }
+        defer { closedir(dir) }
+        let fd = dirfd(dir)
         var total: UInt64 = 0
-        for case let url as URL in en {
-            guard let s = entry(url: url) else { continue }
-            if s.isLink {
-                if s.isDir { en.skipDescendants() }
-                continue
+        var subdirs: [String] = []
+        while let ent = readdir(dir) {
+            let name = withUnsafePointer(to: &ent.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(ent.pointee.d_namlen) + 1) { String(cString: $0) }
             }
-            if !s.isDir { total &+= s.size }
+            if name == "." || name == ".." { continue }
+            var st = stat()
+            guard fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            switch st.st_mode & S_IFMT {
+            case S_IFLNK: continue
+            case S_IFDIR: subdirs.append(path + "/" + name)
+            default: total &+= blocks(st)
+            }
         }
+        for sub in subdirs { total &+= dirSize(sub, depth: depth + 1) }
         return total
     }
 
@@ -199,17 +199,12 @@ public enum Rules {
         var accessed: Date?
     }
 
-    private static let entryKeys: Set<URLResourceKey> = [
-        .isDirectoryKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .contentModificationDateKey, .contentAccessDateKey,
-    ]
-
-    private static func entry(_ path: String) -> Entry? { entry(url: URL(fileURLWithPath: path)) }
-
-    private static func entry(url: URL) -> Entry? {
-        guard let v = try? url.resourceValues(forKeys: entryKeys) else { return nil }
-        return Entry(isDir: v.isDirectory ?? false, isLink: v.isSymbolicLink ?? false,
-                     size: UInt64(max(0, v.totalFileAllocatedSize ?? 0)),
-                     modified: v.contentModificationDate, accessed: v.contentAccessDate)
+    private static func entry(_ path: String) -> Entry? {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        func date(_ t: timespec) -> Date { Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_nsec) / 1e9) }
+        return Entry(isDir: (st.st_mode & S_IFMT) == S_IFDIR, isLink: (st.st_mode & S_IFMT) == S_IFLNK,
+                     size: blocks(st), modified: date(st.st_mtimespec), accessed: date(st.st_atimespec))
     }
 
     // MARK: - Path normalization
@@ -257,6 +252,18 @@ public enum Rules {
         let dir = physical(String(lex[..<cut]))
         let name = String(lex[lex.index(after: cut)...])
         return (dir, name, (dir == "/" ? "" : dir) + "/" + name)
+    }
+
+    /// True when `path` is ~/.Trash or anything under it, on either the lexical or the physical path.
+    static func isInTrash(_ path: String, home: String) -> Bool {
+        let trash = home + "/.Trash"
+        return within(key(lexical(path)), key(lexical(trash))) || within(key(physical(path)), key(physical(trash)))
+    }
+
+    /// True when `path` is ~/Library/CloudStorage or anything under it, lexically or physically.
+    static func isInCloudStorage(_ path: String, home: String) -> Bool {
+        let base = home + "/Library/CloudStorage"
+        return within(key(lexical(path)), key(lexical(base))) || within(key(physical(path)), key(physical(base)))
     }
 
     /// Case-insensitive, Unicode-normalized form used for every comparison (APFS is case-insensitive, case-preserving).
