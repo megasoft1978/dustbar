@@ -12,7 +12,7 @@ Tiny native macOS menu bar app: watches free disk space, shows what is using it,
 ## Build and install
 
 ```sh
-bash scripts/bundle.sh          # build/DustBar.app (release, stripped, ad-hoc signed)
+bash scripts/install.sh            # build, install to /Applications, launch
 cp -R build/DustBar.app /Applications/
 open /Applications/DustBar.app
 ```
