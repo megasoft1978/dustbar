@@ -309,6 +309,8 @@ public struct SunburstView: View {
             Text(ByteText.string(tree.size[Int(node)]))
                 .font(.system(.body, design: .rounded).weight(.bold))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .contentTransition(.numericText())
         }
         .padding(.horizontal, 4)

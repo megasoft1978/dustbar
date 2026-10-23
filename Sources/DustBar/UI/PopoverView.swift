@@ -121,7 +121,7 @@ public struct PopoverView: View {
         HStack(spacing: 8) {
             Image(systemName: "lock.fill")
                 .foregroundStyle(.orange)
-            Text("Some folders were skipped. Full Disk Access gives complete results.")
+            Text("Some folders skipped. Allow Full Disk Access.")
                 .font(.caption)
                 .lineLimit(1)
             Spacer(minLength: 4)
