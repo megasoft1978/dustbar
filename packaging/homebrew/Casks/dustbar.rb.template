@@ -1,0 +1,30 @@
+cask "dustbar" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/megasoft1978/dustbar/releases/download/v#{version}/DustBar-#{version}.dmg"
+  name "DustBar"
+  desc "Menu bar disk analyzer and safe cleaner"
+  homepage "https://github.com/megasoft1978/dustbar"
+
+  depends_on arch: :arm64
+  depends_on macos: :sequoia
+
+  app "DustBar.app"
+
+  postflight do
+    # Not notarized: clear the quarantine flag so Gatekeeper does not block first launch.
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/DustBar.app"]
+  end
+
+  zap trash: [
+    "~/Library/Caches/com.megasoft78.dustbar",
+    "~/Library/Preferences/com.megasoft78.dustbar.plist",
+  ]
+
+  caveats <<~EOS
+    This build is locally signed and not notarized; the cask clears the quarantine flag.
+    Grant Full Disk Access in System Settings > Privacy & Security.
+  EOS
+end

@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>DustBar – a menu bar disk explorer and careful cleaner for macOS</title>
+<meta name="description" content="DustBar is a tiny native macOS menu bar app that shows what fills your disk and cleans it safely after review. No network, no telemetry, no dependencies. MIT licensed.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="DustBar – see what fills your disk, clean it with care">
+<meta property="og:description" content="A tiny native macOS menu bar app. Review first, Move to Trash, permanent steps confirmed separately.">
+<meta property="og:image" content="https://megasoft1978.github.io/dustbar/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="DustBar app icon next to the Explore view of its popover.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DustBar – see what fills your disk, clean it with care">
+<meta name="twitter:description" content="A tiny native macOS menu bar app. Review first, Move to Trash, permanent steps confirmed separately.">
+<meta name="twitter:image" content="https://megasoft1978.github.io/dustbar/assets/og.png">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+<script>try{var t=localStorage.getItem("dustbar-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="main.js" defer></script>
+</head>
+<body id="top">
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="bar wrap">
+    <a class="brand" href="#top"><img src="assets/icon.svg" width="30" height="30" alt=""><span>DustBar</span></a>
+    <nav aria-label="Main">
+      <a href="#views">Views</a>
+      <a href="#safety">Safety</a>
+      <a href="#performance">Performance</a>
+      <a href="#install">Install</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/megasoft1978/dustbar">GitHub</a>
+      <button class="theme-toggle" id="theme" type="button" aria-label="Switch color theme" title="Switch color theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero wrap" aria-labelledby="h-title">
+  <div class="hero-copy">
+    <p class="eyebrow">Native macOS menu bar app</p>
+    <h1 id="h-title">See what fills your disk.<br><span>Clean it with care.</span></h1>
+    <p class="lede">DustBar sits in the menu bar and shows your free space. Open it to see where the gigabytes went, then review each cleanup candidate before anything moves to the Trash.</p>
+    <div class="actions">
+      <a class="button primary" href="#install">Install</a>
+      <a class="button" href="#install" id="hero-brew">Install with Homebrew</a>
+    </div>
+    <ul class="facts" aria-label="Key facts">
+      <li>macOS 15+</li><li>Apple silicon</li><li>Swift 6</li><li>No network</li><li>No dependencies</li><li>MIT</li>
+    </ul>
+    <p class="note">Not notarized yet. DMG downloads need one extra step on first launch. <a href="#faq">What that means</a>.</p>
+  </div>
+  <div class="hero-visual">
+    <div class="menubar" role="img" aria-label="The DustBar menu bar item: a ring and the free space, for example 87 GB.">
+      <img class="on-light" src="assets/menubar-light@2x.png" width="138" height="48" alt="">
+      <img class="on-dark" src="assets/menubar-dark@2x.png" width="138" height="48" alt="">
+    </div>
+    <img class="shot hero-shot on-light" src="assets/explore-light@2x.png" width="892" height="1412" alt="The DustBar popover on the Explore tab: 87.2 GB free of 994 GB, a sunburst map of a scanned demo folder and a Largest here list. Demo data.">
+    <img class="shot hero-shot on-dark" src="assets/explore-dark@2x.png" width="892" height="1412" alt="The DustBar popover on the Explore tab, dark appearance: 87.2 GB free of 994 GB, a sunburst map of a scanned demo folder and a Largest here list. Demo data.">
+    <p class="cap">Demo data. Real app, real popover.</p>
+  </div>
+</section>
+
+<section class="section wrap" id="views" aria-labelledby="views-title">
+  <div class="head">
+    <h2 id="views-title">Four views, four questions.</h2>
+    <p>Where is it? What kind? What grew? What can go?</p>
+  </div>
+  <div class="gallery">
+    <div class="tablist" role="tablist" aria-label="DustBar views">
+      <button class="tab" role="tab" id="tab-explore" type="button" aria-selected="true" aria-controls="panel-explore">Explore</button>
+      <button class="tab" role="tab" id="tab-types" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-types">Types</button>
+      <button class="tab" role="tab" id="tab-growth" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-growth">Growth</button>
+      <button class="tab" role="tab" id="tab-clean" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-clean">Clean</button>
+    </div>
+    <div class="panel" role="tabpanel" id="panel-explore" aria-labelledby="tab-explore" tabindex="0">
+      <div class="panel-copy">
+        <h3>Explore</h3>
+        <p>A sunburst that fills in live while the scan runs. Click any folder to drill down, with a Largest here list beside the map.</p>
+        <ul><li>Incremental refresh rescans only changed folders</li><li>The last scan is cached, so the first view is instant</li><li>Scope: home folder, or whole disk in browse-only mode</li></ul>
+      </div>
+      <img class="shot on-light" src="assets/explore-light@2x.png" width="892" height="1412" alt="Explore tab: sunburst map of a demo folder and the Largest here list." loading="lazy">
+      <img class="shot on-dark" src="assets/explore-dark@2x.png" width="892" height="1412" alt="Explore tab, dark appearance: sunburst map of a demo folder and the Largest here list." loading="lazy">
+    </div>
+    <div class="panel" role="tabpanel" id="panel-types" aria-labelledby="tab-types" tabindex="0" hidden>
+      <div class="panel-copy">
+        <h3>Types</h3>
+        <p>Space by kind of file: video, images, audio, archives, documents, code and apps, each with a file count and share.</p>
+        <ul><li>One stacked bar for the whole picture</li><li>File counts and percentages per type</li></ul>
+      </div>
+      <img class="shot on-light" src="assets/types-light@2x.png" width="892" height="1412" alt="Types tab: stacked bar and a list of file types with sizes and file counts." loading="lazy">
+      <img class="shot on-dark" src="assets/types-dark@2x.png" width="892" height="1412" alt="Types tab, dark appearance: stacked bar and a list of file types." loading="lazy">
+    </div>
+    <div class="panel" role="tabpanel" id="panel-growth" aria-labelledby="tab-growth" tabindex="0" hidden>
+      <div class="panel-copy">
+        <h3>Growth</h3>
+        <p>Compares the current scan with earlier ones and lists the folders that grew, largest increase first.</p>
+        <ul><li>Needs at least one earlier scan to show changes</li><li>Scan totals are kept in a small local history file</li></ul>
+      </div>
+      <img class="shot on-light" src="assets/growth-light@2x.png" width="892" height="1412" alt="Growth tab: folders that grew since an earlier scan, with the increase in GB." loading="lazy">
+      <img class="shot on-dark" src="assets/growth-dark@2x.png" width="892" height="1412" alt="Growth tab, dark appearance: folders that grew since an earlier scan." loading="lazy">
+    </div>
+    <div class="panel" role="tabpanel" id="panel-clean" aria-labelledby="tab-clean" tabindex="0" hidden>
+      <div class="panel-copy">
+        <h3>Clean</h3>
+        <p>Rule-based candidates, each with a size and a Review link. You choose what to select, and nothing moves until you press Move to Trash.</p>
+        <ul><li>Caches, Xcode, simulators, logs and crash reports</li><li>Developer caches, stale node_modules, old Downloads</li><li>Large files, duplicates, Time Machine local snapshots</li></ul>
+      </div>
+      <img class="shot on-light" src="assets/clean-light@2x.png" width="892" height="1412" alt="Clean tab: cleanup candidates with sizes, Review links and a Move to Trash button." loading="lazy">
+      <img class="shot on-dark" src="assets/clean-dark@2x.png" width="892" height="1412" alt="Clean tab, dark appearance: cleanup candidates and a Move to Trash button." loading="lazy">
+    </div>
+    <noscript><p class="note">JavaScript switches the views. Only Explore is shown without it.</p></noscript>
+  </div>
+</section>
+
+<section class="section alt" aria-labelledby="scan-title">
+  <div class="wrap split">
+    <div class="split-copy">
+      <h2 id="scan-title">Watch the map draw itself.</h2>
+      <p>Scanning does not hide behind a spinner. The sunburst fills as folders are measured, so the biggest areas are visible within seconds, long before the scan is complete.</p>
+      <p>The menu bar ring stays amber below 15% free and turns red below 5%. An optional alert fires at a threshold you choose.</p>
+      <p class="note">Recorded from the demo build with synthetic data.</p>
+    </div>
+    <figure class="video-card">
+      <div class="frame">
+        <video id="demo" width="720" height="1140" muted loop playsinline preload="metadata" poster="assets/poster-light.png" controls aria-label="Looping 8 second recording of DustBar scanning a demo folder tree">
+          <source src="assets/demo-scan.webm" type="video/webm">
+          <source src="assets/demo-scan.mp4" type="video/mp4">
+        </video>
+        <button class="play" id="play" type="button" hidden aria-label="Play demo video"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg></button>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="section wrap" id="safety" aria-labelledby="safety-title">
+  <div class="head">
+    <h2 id="safety-title">Nothing leaves without your say.</h2>
+    <p>Cleaning is a short, explicit path. The two permanent actions are separate steps and each asks again.</p>
+  </div>
+  <ol class="steps">
+    <li><span class="n">1</span><h3>Review</h3><p>Every candidate is listed with its size and location. Open it to see the items inside.</p></li>
+    <li><span class="n">2</span><h3>Move to Trash</h3><p>Selected items go to the Trash. Easy to undo.</p><span class="tag ok">Undoable</span></li>
+    <li class="perm"><span class="n">3</span><h3>Empty Trash</h3><p>Asks separately. Removes only the direct children of <code>~/.Trash</code>.</p><span class="tag warn">Permanent</span></li>
+    <li class="perm"><span class="n">4</span><h3>Delete a snapshot</h3><p>Time Machine local snapshots are deleted one by one, after a separate confirmation.</p><span class="tag warn">Permanent</span></li>
+  </ol>
+  <div class="deny">
+    <h3>A hard denylist, whatever a scan finds</h3>
+    <ul>
+      <li>System folders</li>
+      <li>Library internals: Keychains, Mail, Messages, Application Support, Containers</li>
+      <li>Cloud folders</li>
+      <li><code>~/.ssh</code>, <code>~/.gnupg</code>, <code>~/.aws</code></li>
+      <li>App bundles</li>
+      <li>The home folder and its top-level folders</li>
+    </ul>
+  </div>
+</section>
+
+<section class="section alt" id="performance" aria-labelledby="perf-title">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="perf-title">Small, and quiet when idle.</h2>
+      <p>Measured with the scripts in the repository. Every figure is labeled with how it was taken.</p>
+    </div>
+    <ul class="cards">
+      <li><span class="v" data-v="binary">—</span><span class="l">Binary size</span><span class="s" data-s="binary">Release, stripped</span></li>
+      <li><span class="v" data-v="mem">—</span><span class="l">Idle memory</span><span class="s" data-s="mem">Physical footprint, popover closed</span></li>
+      <li><span class="v" data-v="cpu">—</span><span class="l">Idle CPU</span><span class="s" data-s="cpu">Mean over the idle window</span></li>
+      <li><span class="v" data-v="scan1">—</span><span class="l">Full scan, ~/Library</span><span class="s" data-s="scan1">Warm cache</span></li>
+      <li><span class="v" data-v="scan8">—</span><span class="l">Full scan, home folder</span><span class="s" data-s="scan8">Warm cache</span></li>
+      <li><span class="v" data-v="refresh">—</span><span class="l">Incremental refresh</span><span class="s" data-s="refresh">20 changed folders on ~/Library</span></li>
+    </ul>
+    <p class="note" id="bench-meta">Machine, macOS version and date load from <code>benchmarks.json</code>. Numbers reflect a warm disk cache.</p>
+  </div>
+</section>
+
+<section class="section wrap" aria-labelledby="priv-title">
+  <div class="head">
+    <h2 id="priv-title">Private by construction.</h2>
+  </div>
+  <ul class="trio">
+    <li><h3>No network</h3><p>DustBar makes no network connections. There is nothing to block.</p></li>
+    <li><h3>No telemetry</h3><p>No analytics and no accounts.</p></li>
+    <li><h3>No dependencies</h3><p>Pure Swift and system frameworks. The package has no third-party code.</p></li>
+  </ul>
+  <p class="note">Scan data lives in <code>~/Library/Caches/com.megasoft78.dustbar/</code> (<code>tree.bin</code>, <code>history.json</code>); settings are in the standard preferences plist.</p>
+</section>
+
+<section class="section alt" id="install" aria-labelledby="install-title">
+  <div class="wrap narrow">
+    <div class="head">
+      <h2 id="install-title">Install DustBar.</h2>
+      <p>Needs macOS 15 or later on Apple silicon (arm64). Intel is not supported; untested.</p>
+    </div>
+    <div class="tablist itabs" role="tablist" aria-label="Install method">
+      <button class="tab" role="tab" id="itab-brew" type="button" aria-selected="true" aria-controls="ipanel-brew">Homebrew</button>
+      <button class="tab" role="tab" id="itab-dl" type="button" aria-selected="false" tabindex="-1" aria-controls="ipanel-dl">Download</button>
+    </div>
+    <div class="ipanel" role="tabpanel" id="ipanel-brew" aria-labelledby="itab-brew" tabindex="0">
+      <p>One command. Homebrew taps <code>megasoft1978/homebrew-dustbar</code> automatically the first time.</p>
+      <div class="code big"><pre><code>brew install --cask megasoft1978/dustbar/dustbar</code></pre><button class="copy" type="button">Copy</button></div>
+      <p class="gk">Gatekeeper: the cask clears the quarantine flag itself, so the first launch needs no extra step. The build is still locally signed, not notarized.</p>
+      <h3 class="sub">Upgrade</h3>
+      <div class="code"><pre><code>brew upgrade --cask dustbar</code></pre><button class="copy" type="button">Copy</button></div>
+      <h3 class="sub">Uninstall</h3>
+      <div class="code"><pre><code>brew uninstall --cask --zap dustbar</code></pre><button class="copy" type="button">Copy</button></div>
+    </div>
+    <div class="ipanel" role="tabpanel" id="ipanel-dl" aria-labelledby="itab-dl" tabindex="0" hidden>
+      <p>Get <code>DustBar-&lt;version&gt;.dmg</code> (a <code>.zip</code> is also provided) from the latest release.</p>
+      <a class="button primary" href="https://github.com/megasoft1978/dustbar/releases/latest">Download the DMG</a>
+      <ol class="install">
+        <li>
+          <h3>Open the DMG</h3>
+          <p>Drag <strong>DustBar</strong> to <strong>Applications</strong>.</p>
+        </li>
+        <li>
+          <h3>Open it past Gatekeeper</h3>
+          <p class="gk">Current builds are locally signed and not notarized, so macOS warns on first launch. Right-click <code>DustBar.app</code>, choose Open, then confirm. Or run:</p>
+          <div class="code"><pre><code>xattr -dr com.apple.quarantine /Applications/DustBar.app</code></pre><button class="copy" type="button">Copy</button></div>
+        </li>
+      </ol>
+    </div>
+    <div class="fda">
+      <h3>Then grant Full Disk Access</h3>
+      <p>For complete scans: System Settings &gt; Privacy &amp; Security &gt; Full Disk Access, add <code>/Applications/DustBar.app</code> and enable it. Without it, folders macOS protects are skipped and sizes are incomplete.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section wrap narrow" id="faq" aria-labelledby="faq-title">
+  <div class="head"><h2 id="faq-title">Questions</h2></div>
+  <div class="faq">
+    <details><summary>Is it notarized?</summary><p>Not yet. Builds are signed locally, not notarized. The Homebrew cask clears the quarantine flag for you. A DMG or zip download needs one extra step on first launch.</p></details>
+    <details><summary>Will Gatekeeper complain?</summary><p>For a DMG or zip, once: macOS warns on first launch. Right-click <code>DustBar.app</code> in Applications, choose Open, then confirm. Or run:</p>
+      <div class="code"><pre><code>xattr -dr com.apple.quarantine /Applications/DustBar.app</code></pre><button class="copy" type="button">Copy</button></div></details>
+    <details><summary>Does it run on Intel or older macOS?</summary><p>Apple silicon with macOS 15 or later is the supported setup. Intel is not supported and untested.</p></details>
+    <details><summary>How do I update?</summary><p>With Homebrew, run this. With the DMG or zip, download the new <code>DustBar-&lt;version&gt;.dmg</code> and drag it to Applications, replacing the old app. There is no automatic update.</p>
+      <div class="code"><pre><code>brew upgrade --cask dustbar</code></pre><button class="copy" type="button">Copy</button></div></details>
+    <details><summary>What can DustBar delete?</summary><p>Only what you select and confirm, in Clean or from the Explore list, and only outside the denylist. Items go to the Trash first. Two actions are permanent and confirmed separately: Empty Trash, and deleting a Time Machine local snapshot. Always read the Review list.</p></details>
+    <details><summary>Why Full Disk Access?</summary><p>macOS hides some folders from apps without it. DustBar still works, but skips them and reports smaller sizes.</p></details>
+    <details><summary>What does it store?</summary><p><code>tree.bin</code> (the last scan, for an instant first view) and <code>history.json</code> (scan totals for Growth), both in <code>~/Library/Caches/com.megasoft78.dustbar</code>. Settings live in the standard preferences file, <code>~/Library/Preferences/com.megasoft78.dustbar.plist</code>.</p></details>
+    <details><summary>How do I uninstall it?</summary>
+      <p>With Homebrew:</p>
+      <div class="code"><pre><code>brew uninstall --cask --zap dustbar</code></pre><button class="copy" type="button">Copy</button></div>
+      <p>Otherwise quit DustBar from its menu, then remove the app, its cache and its settings:</p>
+      <div class="code"><pre><code>rm -r /Applications/DustBar.app
+rm -r ~/Library/Caches/com.megasoft78.dustbar
+rm -r ~/Library/Preferences/com.megasoft78.dustbar.plist</code></pre><button class="copy" type="button">Copy</button></div>
+      <p>Then remove DustBar from Full Disk Access and Login Items in System Settings.</p></details>
+    <details><summary>Can the reminder (default weekly) delete anything?</summary><p>No. It is a reminder notification. It never deletes anything.</p></details>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="wrap foot">
+    <div><a class="brand" href="#top"><img src="assets/icon.svg" width="26" height="26" alt=""><span>DustBar</span></a><p>MIT licensed. Copyright 2026 Gabriele Ferreri.</p></div>
+    <nav aria-label="Footer"><a href="https://github.com/megasoft1978/dustbar">Source</a><a href="https://github.com/megasoft1978/dustbar/issues">Issues</a><a href="https://github.com/megasoft1978/dustbar/blob/main/LICENSE">License</a><a href="benchmarks.json">benchmarks.json</a></nav>
+  </div>
+</footer>
+</body>
+</html>

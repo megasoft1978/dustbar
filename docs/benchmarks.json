@@ -1,0 +1,40 @@
+{
+  "binaryBytes": 996432,
+  "idleFootprintMB": 15.1,
+  "idleFootprint5minMB": null,
+  "idleSeconds": 61,
+  "idleCpuPct": 0.0,
+  "scan1MSeconds": 5.311,
+  "scan1MFiles": 1073445,
+  "scan8MSeconds": 35.345,
+  "scan8MFiles": 8588615,
+  "refreshSpeedup": 40.2,
+  "refreshFullSeconds": 5.26,
+  "refreshIncrementalSeconds": 0.131,
+  "machine": {
+    "model": "Mac17,14",
+    "cpu": "Apple M5 Max",
+    "cores": 18
+  },
+  "macos": "27.0.1",
+  "date": "2026-10-23T17:02:09Z",
+  "warmCache": true,
+  "methods": {
+    "binaryBytes": "stat of build/DustBar.app/Contents/MacOS/DustBar after scripts/bundle.sh (release, stripped, ad-hoc signed)",
+    "idleFootprintMB": "fresh copy via open -n, popover closed, vmmap -summary 'Physical footprint:' read after 60 s idle",
+    "idleFootprint5minMB": "same as idleFootprintMB, read after 300 s idle; only with --long (previous value kept otherwise)",
+    "idleSeconds": "length of the idle window in seconds (60 default, 300 with --long)",
+    "idleCpuPct": "mean of ps -o %cpu= sampled every 5 s over the idle window",
+    "scan1MSeconds": "DUSTBAR_SCAN_BENCH=~/Library swift test --filter scanBench; BENCH elapsed line; 'scan1M' label is the ~/Library tree as the bench scans it",
+    "scan1MFiles": "files count printed by the scanBench BENCH line",
+    "scan8MSeconds": "DUSTBAR_SCAN_BENCH=~ swift test --filter scanBench; only with --full (previous value kept otherwise)",
+    "scan8MFiles": "files count printed by scanBench on ~; only with --full",
+    "refreshSpeedup": "full scan time / incremental refresh time of 20 random dirs (DUSTBAR_REFRESH_BENCH=1 swift test --filter refreshBench, ~/Library)",
+    "refreshFullSeconds": "full scan time from the refreshBench REFRESH line",
+    "refreshIncrementalSeconds": "refresh time of 20 dirty directories from the refreshBench REFRESH line",
+    "machine": "sysctl hw.model, machdep.cpu.brand_string, hw.ncpu",
+    "macos": "sw_vers -productVersion",
+    "date": "UTC timestamp of the measurement run",
+    "warmCache": "warm cache: no sudo purge; numbers reflect a warm disk cache"
+  }
+}
