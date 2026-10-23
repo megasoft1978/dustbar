@@ -121,16 +121,17 @@ public struct PopoverView: View {
         HStack(spacing: 8) {
             Image(systemName: "lock.fill")
                 .foregroundStyle(.orange)
-            Text("Some folders skipped. Grant Full Disk Access.")
+            Text("Some folders were skipped. Full Disk Access gives complete results.")
                 .font(.caption)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Button("Settings") {
+            Button("Allow…") {
                 if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                     NSWorkspace.shared.open(url)
                 }
             }
             .controlSize(.small)
+            .help("Opens System Settings > Privacy & Security > Full Disk Access")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
@@ -157,16 +158,26 @@ public struct PopoverView: View {
         }
     }
 
-    @ViewBuilder
+    // Only the dot pulses. Pulsing the text cross-fades the old and new digits as they change, which smears them.
     private var scanLabel: some View {
-        let text = Text("Scanning… \(model.progress.files.formatted()) files · \(ByteText.string(model.progress.bytes))")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
+        HStack(spacing: 6) {
+            pulseDot
+            Text("Scanning… \(model.progress.files.formatted()) files · \(ByteText.string(model.progress.bytes))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .transaction { $0.animation = nil }
+        }
+    }
+
+    @ViewBuilder
+    private var pulseDot: some View {
+        let dot = Circle().fill(Color.accentColor).frame(width: 6, height: 6)
         if reduceMotion {
-            text
+            dot
         } else {
-            text.phaseAnimator([1.0, 0.45]) { view, phase in
+            dot.phaseAnimator([1.0, 0.3]) { view, phase in
                 view.opacity(phase)
             } animation: { _ in
                 .easeInOut(duration: 0.9)
