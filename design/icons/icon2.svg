@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#7BD4FF"/><stop offset=".5" stop-color="#488BE5"/><stop offset="1" stop-color="#3846A8"/></linearGradient>
+    <linearGradient id="platter" x1=".16" y1=".08" x2=".84" y2=".92"><stop stop-color="#F9FFFF"/><stop offset=".42" stop-color="#D7F6FF"/><stop offset="1" stop-color="#75BCE8"/></linearGradient>
+    <linearGradient id="arm" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFF"/><stop offset="1" stop-color="#9EE8DD"/></linearGradient>
+    <linearGradient id="gloss" x2="0" y2="1"><stop stop-color="#FFF" stop-opacity=".38"/><stop offset="1" stop-color="#FFF" stop-opacity="0"/></linearGradient>
+    <filter id="shadow" x="-.3" y="-.3" width="1.6" height="1.7"><feGaussianBlur stdDeviation="23"/></filter>
+    <clipPath id="s"><path d="M512 48C687 48 776 48 852 86C924 122 956 190 970 274C980 333 980 421 980 512C980 687 980 776 942 852C906 924 838 956 754 970C695 980 607 980 512 980C337 980 248 980 172 942C100 906 68 838 54 754C44 695 44 607 44 512C44 337 44 248 82 172C118 100 186 68 270 54C329 44 417 48 512 48Z"/></clipPath>
+  </defs>
+  <g clip-path="url(#s)">
+    <path fill="url(#bg)" d="M0 0h1024v1024H0z"/>
+    <ellipse cx="524" cy="796" rx="314" ry="68" fill="#172962" opacity=".4" filter="url(#shadow)"/>
+    <circle cx="500" cy="520" r="303" fill="#1C3982" opacity=".3"/>
+    <circle cx="500" cy="500" r="280" fill="url(#platter)"/>
+    <circle cx="500" cy="500" r="237" fill="none" stroke="#93CDEB" stroke-width="5" opacity=".75"/>
+    <circle cx="500" cy="500" r="204" fill="none" stroke="#B4DDED" stroke-width="4" opacity=".7"/>
+    <circle cx="500" cy="500" r="145" fill="#B9DEF0" opacity=".7"/>
+    <circle cx="500" cy="500" r="97" fill="#6498C5" opacity=".78"/>
+    <circle cx="500" cy="500" r="34" fill="#EAF8FC"/>
+    <path d="M667 296c73 63 116 141 124 231" fill="none" stroke="#5191C8" stroke-width="35" stroke-linecap="round"/>
+    <path d="M783 527c-9 93-58 165-130 218-68 50-153 71-243 54" fill="none" stroke="url(#arm)" stroke-width="48" stroke-linecap="round"/>
+    <circle cx="410" cy="799" r="29" fill="#F4FFFF" stroke="#8EE4DB" stroke-width="12"/>
+    <path d="M712 270l93-96 52 51-99 96" fill="none" stroke="#D6FBF4" stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M0 0h1024v414C798 525 603 535 403 485 209 436 93 387 0 389Z" fill="url(#gloss)"/>
+  </g>
+</svg>

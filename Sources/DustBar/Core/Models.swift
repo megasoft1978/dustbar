@@ -133,6 +133,7 @@ public final class AppModel {
     public var selectedItems: Set<String> = []     // CleanItem.path
     public var onRescan: (() -> Void)?             // set by shell
     public var onClean: (([CleanItem]) -> Void)?   // set by shell, runs Cleaner off-main
+    public var onEmptyTrash: (([CleanItem]) -> Void)?  // permanent delete of ~/.Trash children only; UI must confirm first
     public var lastResult: CleanResult?
     public init() {}
 }
