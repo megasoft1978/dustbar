@@ -99,7 +99,9 @@
     if (ok(j.idleCpuPct)) set("cpu", n(j.idleCpuPct, 1) + " %", "Mean over " + (j.idleSeconds || 60) + " s idle");
     if (ok(j.scan1MSeconds)) set("scan1", n(j.scan1MSeconds, 1) + " s", n(j.scan1MFiles) + " files, warm cache");
     if (ok(j.scan8MSeconds)) set("scan8", n(j.scan8MSeconds, 1) + " s", n(j.scan8MFiles) + " files, warm cache");
-    if (ok(j.refreshSpeedup)) set("refresh", "~" + Math.round(j.refreshSpeedup) + "x", "20 changed folders on ~/Library: " + n(j.refreshIncrementalSeconds, 3) + " s vs " + n(j.refreshFullSeconds, 2) + " s full");
+    var runs = j.refreshSpeedupRuns;
+    if (Array.isArray(runs) && runs.length > 1) set("refresh", Math.round(Math.min.apply(null, runs)) + "–" + Math.round(Math.max.apply(null, runs)) + "×", runs.length + " runs, 20 changed folders");
+    else if (ok(j.refreshSpeedup)) set("refresh", "~" + Math.round(j.refreshSpeedup) + "×", "20 changed folders on ~/Library: " + n(j.refreshIncrementalSeconds, 3) + " s vs " + n(j.refreshFullSeconds, 2) + " s full");
     var m = j.machine || {}, meta = $("#bench-meta");
     if (meta && m.cpu) meta.textContent = m.cpu + ", " + m.cores + " cores (" + m.model + "), macOS " + j.macos + ", measured " + String(j.date).slice(0, 10) + (j.warmCache ? ", warm cache" : "") + ".";
   }).catch(function () {});

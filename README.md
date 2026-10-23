@@ -128,7 +128,7 @@ Measured with the scripts in this repository on a Mac17,14 (Apple M5 Max, 18 cor
 | Idle CPU | 0.0 % | Mean of `ps -o %cpu=` sampled every 5 s over the idle window |
 | Full scan, `~/Library` | 5.31 s, 1,073,445 files | `DUSTBAR_SCAN_BENCH=~/Library swift test --filter scanBench` |
 | Full scan, whole home folder | 35.35 s, 8,588,615 files | `DUSTBAR_SCAN_BENCH=~ swift test --filter scanBench` |
-| Incremental refresh | ~40x for 20 changed folders on `~/Library` (0.131 s vs 5.26 s full) | `DUSTBAR_REFRESH_BENCH=1 swift test --filter refreshBench` |
+| Incremental refresh | 40x to 74x over two runs (incremental 0.06 to 0.13 s vs a 4.5 to 5.3 s full rescan), 20 changed folders on `~/Library`, warm cache | `DUSTBAR_REFRESH_BENCH=1 swift test --filter refreshBench` |
 
 The 5-minute idle footprint has not been recorded yet. A single benchmark is never enough: treat these as a reference point, not a promise.
 
